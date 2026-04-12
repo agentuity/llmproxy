@@ -5,30 +5,19 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/agentuity/llmproxy"
 )
 
-// RetryInterceptor automatically retries failed requests.
-// It handles transient failures like rate limits (429) and server errors (5xx).
 type RetryInterceptor struct {
-	// MaxAttempts is the maximum number of request attempts (including initial).
-	MaxAttempts int
-	// Delay is the wait time between retry attempts.
-	Delay time.Duration
-	// IsRetryable is a custom predicate to determine if a request should be retried.
-	// If nil, the default predicate is used (retries on 429 and 5xx responses,
-	// and on network errors except context cancellation).
-	IsRetryable func(*http.Response, error) bool
+	MaxAttempts         int
+	Delay               time.Duration
+	IsRetryable         func(*http.Response, error) bool
+	UseRateLimitHeaders bool
 }
 
-// Intercept attempts the request up to MaxAttempts times.
-// Between retries, it waits for the configured Delay.
-// Context cancellation (context.Canceled, context.DeadlineExceeded) is not retried.
-//
-// The rawBody is used to reconstruct the request body for each retry attempt,
-// since HTTP request bodies can only be read once.
 func (i *RetryInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
 	var lastErr error
 	var lastResp *http.Response
@@ -42,8 +31,15 @@ func (i *RetryInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMetada
 
 	for attempt := 1; attempt <= i.MaxAttempts; attempt++ {
 		if attempt > 1 {
+			delay := i.Delay
+			if i.UseRateLimitHeaders && lastResp != nil {
+				if headerDelay := parseRetryAfterHeader(lastResp); headerDelay > 0 {
+					delay = headerDelay
+				}
+			}
+
 			select {
-			case <-time.After(i.Delay):
+			case <-time.After(delay):
 			case <-req.Context().Done():
 				return nil, lastMeta, lastRawRespBody, req.Context().Err()
 			}
@@ -75,21 +71,37 @@ func isContextError(err error) bool {
 	return err == context.Canceled || err == context.DeadlineExceeded
 }
 
+func parseRetryAfterHeader(resp *http.Response) time.Duration {
+	retryAfter := resp.Header.Get("Retry-After")
+	if retryAfter == "" {
+		retryAfter = resp.Header.Get("X-RateLimit-Reset")
+	}
+	if retryAfter == "" {
+		return 0
+	}
+
+	if seconds, err := strconv.Atoi(retryAfter); err == nil {
+		if seconds > 0 && seconds < 86400 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+
+	if t, err := http.ParseTime(retryAfter); err == nil {
+		delay := time.Until(t)
+		if delay > 0 && delay < 24*time.Hour {
+			return delay
+		}
+	}
+
+	return 0
+}
+
 func cloneRequest(req *http.Request, body []byte) *http.Request {
 	cloned := req.Clone(req.Context())
 	cloned.Body = io.NopCloser(bytes.NewReader(body))
 	return cloned
 }
 
-// NewRetry creates a retry interceptor with the given configuration.
-//
-// Parameters:
-//   - maxAttempts: Maximum number of attempts (e.g., 3 = initial + 2 retries)
-//   - delay: Time to wait between retry attempts
-//
-// Example:
-//
-//	retry := interceptors.NewRetry(3, time.Second)
 func NewRetry(maxAttempts int, delay time.Duration) *RetryInterceptor {
 	return &RetryInterceptor{
 		MaxAttempts: maxAttempts,
@@ -97,15 +109,14 @@ func NewRetry(maxAttempts int, delay time.Duration) *RetryInterceptor {
 	}
 }
 
-// NewRetryWithPredicate creates a retry interceptor with a custom retry predicate.
-// Use this to customize which responses or errors should be retried.
-//
-// Example:
-//
-//	retry := interceptors.NewRetryWithPredicate(3, time.Second, func(resp *http.Response, err error) bool {
-//	    // Only retry on specific error conditions
-//	    return err != nil || resp.StatusCode == 503
-//	})
+func NewRetryWithRateLimitHeaders(maxAttempts int, defaultDelay time.Duration) *RetryInterceptor {
+	return &RetryInterceptor{
+		MaxAttempts:         maxAttempts,
+		Delay:               defaultDelay,
+		UseRateLimitHeaders: true,
+	}
+}
+
 func NewRetryWithPredicate(maxAttempts int, delay time.Duration, isRetryable func(*http.Response, error) bool) *RetryInterceptor {
 	return &RetryInterceptor{
 		MaxAttempts: maxAttempts,

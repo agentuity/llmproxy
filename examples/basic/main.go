@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/agentuity/llmproxy"
 	"github.com/agentuity/llmproxy/interceptors"
@@ -230,6 +231,7 @@ func main() {
 	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		provider := openaiProvider
 		opts := []llmproxy.ProxyOption{
+			llmproxy.WithInterceptor(interceptors.NewRetry(3, time.Millisecond*250)),
 			llmproxy.WithInterceptor(tracingInterceptor),
 			llmproxy.WithInterceptor(loggingInterceptor),
 			llmproxy.WithInterceptor(interceptors.NewMetrics(metrics)),

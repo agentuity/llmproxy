@@ -314,6 +314,22 @@ All fields use `sync/atomic` operations for thread safety. The `Metrics` struct 
 - **Body handling:** Reconstructs the request body from raw bytes on each retry attempt
 - **Custom predicate:** `NewRetryWithPredicate(maxAttempts, delay, predicate)` allows callers to supply a custom function that decides whether a given response should be retried
 
+`NewRetryWithRateLimitHeaders(maxAttempts, defaultDelay)` — Retries with rate limit header support:
+
+- **Retry-After header:** Parses both seconds (integer) and HTTP date formats
+- **X-RateLimit-Reset header:** Fallback if Retry-After not present
+- **Max delay:** Values over 24 hours are ignored (fallback to defaultDelay)
+- **Precedence:** Retry-After takes precedence over X-RateLimit-Reset
+
+Example:
+
+```go
+// Use rate limit headers from provider
+retry := interceptors.NewRetryWithRateLimitHeaders(3, time.Second)
+
+// If provider returns 429 with Retry-After: 30, waits 30s instead of 1s
+```
+
 ### Billing
 
 `NewBilling(lookup, onResult)` — Calculates the cost of each request:
