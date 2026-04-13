@@ -318,7 +318,7 @@ All fields use `sync/atomic` operations for thread safety. The `Metrics` struct 
 
 - **Retry-After header:** Parses both seconds (integer) and HTTP date formats
 - **X-RateLimit-Reset header:** Fallback if Retry-After not present
-- **Max delay:** Values over 24 hours are ignored (fallback to defaultDelay)
+- **Max delay:** Values over 24 hours are ignored (fallback to defaultDelay); exactly 24 hours is accepted
 - **Precedence:** Retry-After takes precedence over X-RateLimit-Reset
 
 Example:

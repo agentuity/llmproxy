@@ -331,6 +331,9 @@ func TestExtractor_ZeroUsage(t *testing.T) {
 	if meta.Usage.CompletionTokens != 0 {
 		t.Errorf("CompletionTokens = %d, want 0", meta.Usage.CompletionTokens)
 	}
+	if meta.Usage.TotalTokens != 0 {
+		t.Errorf("TotalTokens = %d, want 0", meta.Usage.TotalTokens)
+	}
 }
 
 func TestExtractor_InvalidJSON(t *testing.T) {

@@ -81,14 +81,14 @@ func parseRetryAfterHeader(resp *http.Response) time.Duration {
 	}
 
 	if seconds, err := strconv.Atoi(retryAfter); err == nil {
-		if seconds > 0 && seconds < 86400 {
+		if seconds > 0 && seconds <= 86400 {
 			return time.Duration(seconds) * time.Second
 		}
 	}
 
 	if t, err := http.ParseTime(retryAfter); err == nil {
 		delay := time.Until(t)
-		if delay > 0 && delay < 24*time.Hour {
+		if delay > 0 && delay <= 24*time.Hour {
 			return delay
 		}
 	}

@@ -3,6 +3,7 @@ package interceptors
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -304,11 +305,11 @@ func TestRetryInterceptor_CustomPredicate(t *testing.T) {
 
 func TestRetryInterceptor_RetryAfterHeader(t *testing.T) {
 	callCount := 0
-	var retryAfter int
+	retryAfterSeconds := 1
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		if callCount == 1 {
-			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 			w.WriteHeader(http.StatusTooManyRequests)
 		} else {
 			w.WriteHeader(http.StatusOK)
@@ -334,17 +335,22 @@ func TestRetryInterceptor_RetryAfterHeader(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2", callCount)
 	}
-	if elapsed < time.Duration(retryAfter)*time.Second {
-		t.Errorf("elapsed = %v, should have waited at least %v", elapsed, time.Duration(retryAfter)*time.Second)
+	expectedMin := time.Duration(retryAfterSeconds) * time.Second
+	if elapsed < expectedMin {
+		t.Errorf("elapsed = %v, should have waited at least %v", elapsed, expectedMin)
+	}
+	if elapsed > expectedMin+200*time.Millisecond {
+		t.Errorf("elapsed = %v, should have waited no more than %v", elapsed, expectedMin+200*time.Millisecond)
 	}
 }
 
 func TestRetryInterceptor_RetryAfterDateHeader(t *testing.T) {
 	callCount := 0
+	retryAfterSeconds := 2
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		if callCount == 1 {
-			retryTime := time.Now().Add(500 * time.Millisecond)
+			retryTime := time.Now().Add(time.Duration(retryAfterSeconds) * time.Second)
 			w.Header().Set("Retry-After", retryTime.UTC().Format(http.TimeFormat))
 			w.WriteHeader(http.StatusTooManyRequests)
 		} else {
@@ -371,17 +377,19 @@ func TestRetryInterceptor_RetryAfterDateHeader(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2", callCount)
 	}
-	if elapsed < 400*time.Millisecond {
-		t.Errorf("elapsed = %v, should have waited for Retry-After date", elapsed)
+	expectedMin := time.Duration(retryAfterSeconds)*time.Second - 500*time.Millisecond
+	if elapsed < expectedMin {
+		t.Errorf("elapsed = %v, should have waited for Retry-After date (at least %v)", elapsed, expectedMin)
 	}
 }
 
 func TestRetryInterceptor_XRateLimitReset(t *testing.T) {
 	callCount := 0
+	resetSeconds := 1
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		if callCount == 1 {
-			w.Header().Set("X-RateLimit-Reset", "1")
+			w.Header().Set("X-RateLimit-Reset", strconv.Itoa(resetSeconds))
 			w.WriteHeader(http.StatusTooManyRequests)
 		} else {
 			w.WriteHeader(http.StatusOK)
@@ -407,8 +415,9 @@ func TestRetryInterceptor_XRateLimitReset(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2", callCount)
 	}
-	if elapsed < 900*time.Millisecond {
-		t.Errorf("elapsed = %v, should have used X-RateLimit-Reset header", elapsed)
+	expectedMin := time.Duration(resetSeconds) * time.Second
+	if elapsed < expectedMin {
+		t.Errorf("elapsed = %v, should have used X-RateLimit-Reset header (at least %v)", elapsed, expectedMin)
 	}
 }
 
@@ -504,6 +513,16 @@ func TestParseRetryAfterHeader_TooLarge(t *testing.T) {
 	delay := parseRetryAfterHeader(resp)
 	if delay != 0 {
 		t.Errorf("delay = %v, want 0 (>24h is ignored)", delay)
+	}
+}
+
+func TestParseRetryAfterHeader_Exactly24h(t *testing.T) {
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("Retry-After", "86400")
+
+	delay := parseRetryAfterHeader(resp)
+	if delay != 24*time.Hour {
+		t.Errorf("delay = %v, want 24h (exactly 24h should be accepted)", delay)
 	}
 }
 

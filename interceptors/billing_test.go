@@ -1,6 +1,7 @@
 package interceptors
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,8 +63,9 @@ func TestBillingInterceptor_Success(t *testing.T) {
 	expectedOutputCost := 60.0 * 50 / 1_000_000
 	expectedTotal := expectedInputCost + expectedOutputCost
 
-	if result.TotalCost != expectedTotal {
-		t.Errorf("TotalCost = %f, want %f", result.TotalCost, expectedTotal)
+	epsilon := 1e-9
+	if math.Abs(result.TotalCost-expectedTotal) > epsilon {
+		t.Errorf("TotalCost = %f, want %f (diff: %e)", result.TotalCost, expectedTotal, math.Abs(result.TotalCost-expectedTotal))
 	}
 }
 

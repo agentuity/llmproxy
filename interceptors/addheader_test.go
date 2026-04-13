@@ -33,6 +33,7 @@ func TestAddHeaderInterceptor_ResponseHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Intercept returned error: %v", err)
 	}
+	defer resp.Body.Close()
 
 	if got := resp.Header.Get("X-Gateway-Version"); got != "1.0" {
 		t.Errorf("X-Gateway-Version header = %q, want %q", got, "1.0")
@@ -111,6 +112,7 @@ func TestAddHeaderInterceptor_Both(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Intercept returned error: %v", err)
 	}
+	defer resp.Body.Close()
 
 	if got := capturedReq.Header.Get("X-Request-ID"); got != "req-123" {
 		t.Errorf("Request X-Request-ID header = %q, want %q", got, "req-123")
