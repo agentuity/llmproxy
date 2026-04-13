@@ -154,4 +154,50 @@ func TestExtractor(t *testing.T) {
 			t.Error("raw body mismatch")
 		}
 	})
+
+	t.Run("extracts cache usage", func(t *testing.T) {
+		extractor := &Extractor{}
+		respBody := `{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-opus-20240229","content":[{"type":"text","text":"Hello!"}],"stop_reason":"end_turn","usage":{"input_tokens":50,"output_tokens":5,"cache_creation_input_tokens":500,"cache_read_input_tokens":1000},"cache_creation":{"ephemeral_5m_input_tokens":500,"ephemeral_1h_input_tokens":0}}`
+
+		resp := &http.Response{
+			Body: io.NopCloser(bytes.NewReader([]byte(respBody))),
+		}
+
+		meta, _, err := extractor.Extract(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		cacheUsage, ok := meta.Custom["cache_usage"].(llmproxy.CacheUsage)
+		if !ok {
+			t.Fatal("expected cache_usage in Custom map")
+		}
+		if cacheUsage.CacheCreationInputTokens != 500 {
+			t.Errorf("expected 500 cache creation tokens, got %d", cacheUsage.CacheCreationInputTokens)
+		}
+		if cacheUsage.CacheReadInputTokens != 1000 {
+			t.Errorf("expected 1000 cache read tokens, got %d", cacheUsage.CacheReadInputTokens)
+		}
+		if cacheUsage.Ephemeral5mInputTokens != 500 {
+			t.Errorf("expected 500 5m tokens, got %d", cacheUsage.Ephemeral5mInputTokens)
+		}
+	})
+
+	t.Run("no cache usage when not present", func(t *testing.T) {
+		extractor := &Extractor{}
+		respBody := `{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-opus-20240229","content":[{"type":"text","text":"Hello!"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`
+
+		resp := &http.Response{
+			Body: io.NopCloser(bytes.NewReader([]byte(respBody))),
+		}
+
+		meta, _, err := extractor.Extract(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if _, ok := meta.Custom["cache_usage"]; ok {
+			t.Error("expected no cache_usage in Custom map when not present in response")
+		}
+	})
 }

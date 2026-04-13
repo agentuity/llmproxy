@@ -105,6 +105,13 @@ type ContentBlock struct {
 	Image      *ImageSource `json:"image,omitempty"`
 	ToolUse    *ToolUse     `json:"toolUse,omitempty"`
 	ToolResult *ToolResult  `json:"toolResult,omitempty"`
+	CachePoint *CachePoint  `json:"cachePoint,omitempty"`
+}
+
+// CachePoint represents a cache checkpoint for prompt caching.
+type CachePoint struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 // ImageSource represents an image in a content block.
@@ -140,7 +147,8 @@ type ToolResult struct {
 
 // SystemBlock represents a system message block.
 type SystemBlock struct {
-	Text string `json:"text"`
+	Text       string      `json:"text"`
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
 }
 
 // InferenceConfig contains inference parameters.
@@ -159,7 +167,8 @@ type ToolConfig struct {
 
 // Tool represents a tool definition.
 type Tool struct {
-	ToolSpec *ToolSpec `json:"toolSpec,omitempty"`
+	ToolSpec   *ToolSpec   `json:"toolSpec,omitempty"`
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
 }
 
 // ToolSpec contains tool specification.

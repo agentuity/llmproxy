@@ -493,3 +493,67 @@ func TestNewEnricher(t *testing.T) {
 		t.Errorf("APIKey = %q, want test-key", enricher.APIKey)
 	}
 }
+
+func TestExtractor_CacheUsage(t *testing.T) {
+	body := `{"id":"chatcmpl-123","model":"gpt-4","usage":{"prompt_tokens":2006,"completion_tokens":300,"total_tokens":2306,"prompt_tokens_details":{"cached_tokens":1920}},"choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}]}`
+	extractor := NewExtractor()
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cacheUsage, ok := meta.Custom["cache_usage"].(llmproxy.CacheUsage)
+	if !ok {
+		t.Fatal("expected cache_usage in Custom map")
+	}
+	if cacheUsage.CachedTokens != 1920 {
+		t.Errorf("CachedTokens = %d, want 1920", cacheUsage.CachedTokens)
+	}
+}
+
+func TestExtractor_NoCacheUsage(t *testing.T) {
+	body := `{"id":"chatcmpl-123","model":"gpt-4","usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150},"choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}]}`
+	extractor := NewExtractor()
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := meta.Custom["cache_usage"]; ok {
+		t.Error("expected no cache_usage in Custom map when not present in response")
+	}
+}
+
+func TestExtractor_ZeroCachedTokens(t *testing.T) {
+	body := `{"id":"chatcmpl-123","model":"gpt-4","usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":0}},"choices":[]}`
+	extractor := NewExtractor()
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := meta.Custom["cache_usage"]; ok {
+		t.Error("expected no cache_usage when cached_tokens is 0")
+	}
+}

@@ -54,8 +54,9 @@ func main() {
 ## Features
 
 - **9 Provider Implementations**: OpenAI, Anthropic, Groq, Fireworks, x.AI, Google AI, AWS Bedrock, Azure OpenAI, OpenAI-compatible base
-- **7 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader
+- **8 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader, PromptCaching
 - **Pricing Integration**: models.dev adapter with markup support
+- **Prompt Caching**: prompt caching support for Anthropic, OpenAI, xAI, Fireworks, and Bedrock
 - **Raw Body Preservation**: Custom JSON fields pass through unchanged
 
 ## Providers
@@ -100,6 +101,24 @@ llmproxy.WithInterceptor(interceptors.NewResponseHeaderBan("Openai-Organization"
 llmproxy.WithInterceptor(interceptors.NewAddResponseHeader(
     interceptors.NewHeader("X-Gateway", "llmproxy"),
 ))
+
+// Anthropic prompt caching (default 5 min, free)
+llmproxy.WithInterceptor(interceptors.NewAnthropicPromptCaching(interceptors.CacheRetentionDefault))
+
+// Anthropic prompt caching with 1h retention (costs more)
+llmproxy.WithInterceptor(interceptors.NewAnthropicPromptCaching(interceptors.CacheRetention1h))
+
+// OpenAI prompt caching with explicit cache key
+llmproxy.WithInterceptor(interceptors.NewOpenAIPromptCaching(interceptors.CacheRetention24h, "my-cache-key"))
+
+// OpenAI prompt caching with auto-derived key and tenant namespace
+llmproxy.WithInterceptor(interceptors.NewOpenAIPromptCachingAuto("tenant-123", interceptors.CacheRetentionDefault))
+
+// xAI/Grok prompt caching (uses x-grok-conv-id header)
+llmproxy.WithInterceptor(interceptors.NewXAIPromptCaching("conv-abc123"))
+
+// Fireworks prompt caching (uses x-session-affinity and x-prompt-cache-isolation-key headers)
+llmproxy.WithInterceptor(interceptors.NewFireworksPromptCaching("session-123"))
 ```
 
 ## Architecture

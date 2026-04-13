@@ -46,6 +46,12 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		Custom:  make(map[string]any),
 	}
 
+	if openaiResp.Usage.PromptTokensDetails != nil && openaiResp.Usage.PromptTokensDetails.CachedTokens > 0 {
+		meta.Custom["cache_usage"] = llmproxy.CacheUsage{
+			CachedTokens: openaiResp.Usage.PromptTokensDetails.CachedTokens,
+		}
+	}
+
 	for i, c := range openaiResp.Choices {
 		meta.Choices[i] = llmproxy.Choice{
 			Index:        c.Index,
@@ -86,9 +92,25 @@ type OpenAIResponse struct {
 
 // UsageInfo tracks token usage in an OpenAI-compatible response.
 type UsageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails contains detailed prompt token breakdown.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
+}
+
+// CompletionTokensDetails contains detailed completion token breakdown.
+type CompletionTokensDetails struct {
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
 
 // ResponseChoice represents a single completion choice.

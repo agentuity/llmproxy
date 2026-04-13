@@ -56,6 +56,32 @@ type Usage struct {
 	TotalTokens int `json:"total_tokens"`
 }
 
+// CacheUsage tracks prompt caching token consumption.
+type CacheUsage struct {
+	// CachedTokens is the number of tokens served from cache (OpenAI).
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CacheCreationInputTokens is the number of tokens written to cache (Anthropic).
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	// CacheReadInputTokens is the number of tokens read from cache (Anthropic).
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	// Ephemeral5mInputTokens is the number of 5-minute cache write tokens (Anthropic).
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens,omitempty"`
+	// Ephemeral1hInputTokens is the number of 1-hour cache write tokens (Anthropic).
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"`
+	// CacheWriteTokens is the number of tokens written to cache (Bedrock).
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// CacheDetails contains TTL-based cache write breakdown (Bedrock).
+	CacheDetails []CacheDetail `json:"cache_details,omitempty"`
+}
+
+// CacheDetail contains cache details for a checkpoint (Bedrock).
+type CacheDetail struct {
+	// TTL is the time-to-live for the cache entry (e.g., "5m", "1h").
+	TTL string `json:"ttl,omitempty"`
+	// CacheWriteTokens is the number of tokens written to cache at this TTL.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
 // Choice represents a single completion choice in the response.
 type Choice struct {
 	// Index is the position of this choice in the choices array.

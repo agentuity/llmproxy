@@ -42,6 +42,18 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		Custom:  make(map[string]any),
 	}
 
+	cacheUsage := llmproxy.CacheUsage{
+		CacheCreationInputTokens: anthropicResp.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     anthropicResp.Usage.CacheReadInputTokens,
+	}
+	if anthropicResp.CacheCreation != nil {
+		cacheUsage.Ephemeral5mInputTokens = anthropicResp.CacheCreation.Ephemeral5mInputTokens
+		cacheUsage.Ephemeral1hInputTokens = anthropicResp.CacheCreation.Ephemeral1hInputTokens
+	}
+	if cacheUsage.CacheCreationInputTokens > 0 || cacheUsage.CacheReadInputTokens > 0 {
+		meta.Custom["cache_usage"] = cacheUsage
+	}
+
 	if len(anthropicResp.Content) > 0 {
 		var content string
 		var role string
@@ -70,14 +82,15 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 
 // Response represents an Anthropic messages API response.
 type Response struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Role         string         `json:"role"`
-	Model        string         `json:"model"`
-	Content      []ContentBlock `json:"content"`
-	StopReason   string         `json:"stop_reason"`
-	StopSequence string         `json:"stop_sequence,omitempty"`
-	Usage        UsageInfo      `json:"usage"`
+	ID            string             `json:"id"`
+	Type          string             `json:"type"`
+	Role          string             `json:"role"`
+	Model         string             `json:"model"`
+	Content       []ContentBlock     `json:"content"`
+	StopReason    string             `json:"stop_reason"`
+	StopSequence  string             `json:"stop_sequence,omitempty"`
+	Usage         UsageInfo          `json:"usage"`
+	CacheCreation *CacheCreationInfo `json:"cache_creation,omitempty"`
 }
 
 // ContentBlock represents a content block in an Anthropic response.
@@ -88,8 +101,16 @@ type ContentBlock struct {
 
 // UsageInfo tracks token usage in an Anthropic response.
 type UsageInfo struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// CacheCreationInfo tracks cache creation token breakdown.
+type CacheCreationInfo struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"`
 }
 
 // NewExtractor creates a new Anthropic response extractor.

@@ -70,6 +70,7 @@ type MetaContextKey struct{}
 type MetaContextValue struct {
 	Meta    BodyMetadata
 	RawBody []byte
+	OrgID   string
 }
 
 // GetMetaFromContext retrieves the metadata stored in a context.
