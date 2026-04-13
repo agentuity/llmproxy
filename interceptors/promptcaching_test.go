@@ -3,6 +3,7 @@ package interceptors
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1836,5 +1837,211 @@ func TestPromptCachingInterceptor_BedrockCacheUsage(t *testing.T) {
 	}
 	if cacheUsage.CacheWriteTokens != 20 {
 		t.Errorf("CacheWriteTokens = %d, want 20", cacheUsage.CacheWriteTokens)
+	}
+}
+
+func TestPromptCachingInterceptor_XAIAutoDerive(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		convID := r.Header.Get("x-grok-conv-id")
+		if convID == "" {
+			t.Error("x-grok-conv-id header should be auto-derived")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCachingAuto()
+
+	reqBody := `{"model":"grok-2-1212","system":"You are helpful.","messages":[{"role":"user","content":"Hello"}]}`
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(reqBody)))
+	meta := llmproxy.BodyMetadata{Model: "grok-2-1212"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(reqBody), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_XAIWithTraceID(t *testing.T) {
+	traceID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
+	expectedTraceIDHex := hex.EncodeToString(traceID[:])
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		convID := r.Header.Get("x-grok-conv-id")
+		if convID != expectedTraceIDHex {
+			t.Errorf("x-grok-conv-id = %q, want %q", convID, expectedTraceIDHex)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	traceExtractor := func(ctx context.Context) TraceInfo {
+		return TraceInfo{TraceID: traceID}
+	}
+
+	caching := NewXAIPromptCachingWithTraceID(traceExtractor)
+
+	reqBody := `{"model":"grok-2-1212","messages":[]}`
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(reqBody)))
+	meta := llmproxy.BodyMetadata{Model: "grok-2-1212"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(reqBody), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_FireworksAutoDerive(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.Header.Get(HeaderFireworksSessionAffinity)
+		if sessionID == "" {
+			t.Error("x-session-affinity header should be auto-derived")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewFireworksPromptCachingAuto()
+
+	reqBody := `{"model":"accounts/fireworks/models/llama-v3-70b-instruct","system":"You are helpful.","messages":[{"role":"user","content":"Hello"}]}`
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(reqBody)))
+	meta := llmproxy.BodyMetadata{Model: "accounts/fireworks/models/llama-v3-70b-instruct"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(reqBody), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_FireworksWithTraceID(t *testing.T) {
+	traceID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
+	expectedTraceIDHex := hex.EncodeToString(traceID[:])
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.Header.Get(HeaderFireworksSessionAffinity)
+		if sessionID != expectedTraceIDHex {
+			t.Errorf("x-session-affinity = %q, want %q", sessionID, expectedTraceIDHex)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	traceExtractor := func(ctx context.Context) TraceInfo {
+		return TraceInfo{TraceID: traceID}
+	}
+
+	caching := NewFireworksPromptCachingWithTraceID(traceExtractor)
+
+	reqBody := `{"model":"accounts/fireworks/models/llama-v3-70b-instruct","messages":[]}`
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(reqBody)))
+	meta := llmproxy.BodyMetadata{Model: "accounts/fireworks/models/llama-v3-70b-instruct"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(reqBody), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_XAICacheKeyHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		convID := r.Header.Get("x-grok-conv-id")
+		if convID != "header-key" {
+			t.Errorf("x-grok-conv-id = %q, want header-key", convID)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCaching("config-key")
+
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(`{"model":"grok-2-1212","messages":[]}`)))
+	req.Header.Set(HeaderCacheKey, "header-key")
+	meta := llmproxy.BodyMetadata{Model: "grok-2-1212"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(`{"model":"grok-2-1212","messages":[]}`), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_FireworksCacheKeyHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.Header.Get(HeaderFireworksSessionAffinity)
+		if sessionID != "header-key" {
+			t.Errorf("x-session-affinity = %q, want header-key", sessionID)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewFireworksPromptCaching("config-key")
+
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader([]byte(`{"model":"accounts/fireworks/models/llama-v3-70b-instruct","messages":[]}`)))
+	req.Header.Set(HeaderCacheKey, "header-key")
+	meta := llmproxy.BodyMetadata{Model: "accounts/fireworks/models/llama-v3-70b-instruct"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, []byte(`{"model":"accounts/fireworks/models/llama-v3-70b-instruct","messages":[]}`), next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
 	}
 }

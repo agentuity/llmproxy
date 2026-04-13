@@ -30,15 +30,18 @@ const (
 
 type CacheKeyFunc func(meta llmproxy.BodyMetadata, rawBody []byte) string
 
+type CacheKeyExtractor func(ctx context.Context, req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) string
+
 type OrgIDExtractor func(ctx context.Context, req *http.Request, meta llmproxy.BodyMetadata) string
 
 type PromptCachingConfig struct {
-	Enabled        bool
-	Retention      CacheRetention
-	CacheKey       string
-	Namespace      string
-	CacheKeyFn     CacheKeyFunc
-	OrgIDExtractor OrgIDExtractor
+	Enabled           bool
+	Retention         CacheRetention
+	CacheKey          string
+	Namespace         string
+	CacheKeyFn        CacheKeyFunc
+	CacheKeyExtractor CacheKeyExtractor
+	OrgIDExtractor    OrgIDExtractor
 }
 
 type PromptCachingInterceptor struct {
@@ -79,7 +82,7 @@ func (i *PromptCachingInterceptor) Intercept(req *http.Request, meta llmproxy.Bo
 	}
 
 	if i.provider == "xai" {
-		return i.interceptXAI(req, rawBody, next)
+		return i.interceptXAI(req, meta, rawBody, next)
 	}
 
 	if i.provider == "fireworks" {
@@ -114,16 +117,17 @@ func (i *PromptCachingInterceptor) Intercept(req *http.Request, meta llmproxy.Bo
 	return resp, respMeta, rawRespBody, err
 }
 
-func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
-	if i.config.CacheKey == "" {
-		return next(req)
-	}
-
+func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
 	if req.Header.Get("x-grok-conv-id") != "" {
 		return next(req)
 	}
 
-	req.Header.Set("x-grok-conv-id", i.config.CacheKey)
+	cacheKey := i.resolveDynamicCacheKey(req, meta, rawBody)
+	if cacheKey == "" {
+		return next(req)
+	}
+
+	req.Header.Set("x-grok-conv-id", cacheKey)
 
 	resp, respMeta, rawRespBody, err := next(req)
 	if err != nil {
@@ -146,8 +150,10 @@ func (i *PromptCachingInterceptor) interceptFireworks(req *http.Request, meta ll
 		req.Header.Set(HeaderFireworksPromptCacheIsolation, orgID)
 	}
 
-	if i.config.CacheKey != "" && req.Header.Get(HeaderFireworksSessionAffinity) == "" {
-		req.Header.Set(HeaderFireworksSessionAffinity, i.config.CacheKey)
+	if req.Header.Get(HeaderFireworksSessionAffinity) == "" {
+		if sessionID := i.resolveDynamicCacheKey(req, meta, rawBody); sessionID != "" {
+			req.Header.Set(HeaderFireworksSessionAffinity, sessionID)
+		}
 	}
 
 	resp, respMeta, rawRespBody, err := next(req)
@@ -579,6 +585,26 @@ func (i *PromptCachingInterceptor) buildNamespacedKey(orgID, key string) string 
 	return key
 }
 
+func (i *PromptCachingInterceptor) resolveDynamicCacheKey(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) string {
+	if headerKey := req.Header.Get(HeaderCacheKey); headerKey != "" {
+		return headerKey
+	}
+
+	if i.config.CacheKeyExtractor != nil {
+		if key := i.config.CacheKeyExtractor(req.Context(), req, meta, rawBody); key != "" {
+			return key
+		}
+	}
+
+	if i.config.CacheKeyFn != nil {
+		if key := i.config.CacheKeyFn(meta, rawBody); key != "" {
+			return key
+		}
+	}
+
+	return i.config.CacheKey
+}
+
 func DeriveCacheKeyFromPrefix(meta llmproxy.BodyMetadata, rawBody []byte) string {
 	var body struct {
 		System   interface{} `json:"system"`
@@ -730,6 +756,48 @@ func NewXAIPromptCachingWithResult(convID string, onResult func(llmproxy.CacheUs
 	}, onResult)
 }
 
+func NewXAIPromptCachingAuto() *PromptCachingInterceptor {
+	return NewPromptCaching("xai", PromptCachingConfig{
+		Enabled:    true,
+		CacheKeyFn: DeriveCacheKeyFromPrefix,
+	})
+}
+
+func NewXAIPromptCachingAutoWithResult(onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("xai", PromptCachingConfig{
+		Enabled:    true,
+		CacheKeyFn: DeriveCacheKeyFromPrefix,
+	}, onResult)
+}
+
+func NewXAIPromptCachingWithExtractor(extractor CacheKeyExtractor) *PromptCachingInterceptor {
+	return NewPromptCaching("xai", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: extractor,
+	})
+}
+
+func NewXAIPromptCachingWithExtractorAndResult(extractor CacheKeyExtractor, onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("xai", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: extractor,
+	}, onResult)
+}
+
+func NewXAIPromptCachingWithTraceID(traceExtractor TraceExtractor) *PromptCachingInterceptor {
+	return NewPromptCaching("xai", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: TraceIDCacheKeyExtractor(traceExtractor),
+	})
+}
+
+func NewXAIPromptCachingWithTraceIDAndResult(traceExtractor TraceExtractor, onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("xai", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: TraceIDCacheKeyExtractor(traceExtractor),
+	}, onResult)
+}
+
 func NewFireworksPromptCaching(sessionID string) *PromptCachingInterceptor {
 	return NewPromptCaching("fireworks", PromptCachingConfig{
 		Enabled:  true,
@@ -741,6 +809,48 @@ func NewFireworksPromptCachingWithResult(sessionID string, onResult func(llmprox
 	return NewPromptCachingWithResult("fireworks", PromptCachingConfig{
 		Enabled:  true,
 		CacheKey: sessionID,
+	}, onResult)
+}
+
+func NewFireworksPromptCachingAuto() *PromptCachingInterceptor {
+	return NewPromptCaching("fireworks", PromptCachingConfig{
+		Enabled:    true,
+		CacheKeyFn: DeriveCacheKeyFromPrefix,
+	})
+}
+
+func NewFireworksPromptCachingAutoWithResult(onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("fireworks", PromptCachingConfig{
+		Enabled:    true,
+		CacheKeyFn: DeriveCacheKeyFromPrefix,
+	}, onResult)
+}
+
+func NewFireworksPromptCachingWithExtractor(extractor CacheKeyExtractor) *PromptCachingInterceptor {
+	return NewPromptCaching("fireworks", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: extractor,
+	})
+}
+
+func NewFireworksPromptCachingWithExtractorAndResult(extractor CacheKeyExtractor, onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("fireworks", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: extractor,
+	}, onResult)
+}
+
+func NewFireworksPromptCachingWithTraceID(traceExtractor TraceExtractor) *PromptCachingInterceptor {
+	return NewPromptCaching("fireworks", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: TraceIDCacheKeyExtractor(traceExtractor),
+	})
+}
+
+func NewFireworksPromptCachingWithTraceIDAndResult(traceExtractor TraceExtractor, onResult func(llmproxy.CacheUsage)) *PromptCachingInterceptor {
+	return NewPromptCachingWithResult("fireworks", PromptCachingConfig{
+		Enabled:           true,
+		CacheKeyExtractor: TraceIDCacheKeyExtractor(traceExtractor),
 	}, onResult)
 }
 
@@ -795,4 +905,17 @@ func DefaultOrgIDExtractor(ctx context.Context, req *http.Request, meta llmproxy
 		return orgID
 	}
 	return ""
+}
+
+func TraceIDCacheKeyExtractor(traceExtractor TraceExtractor) CacheKeyExtractor {
+	return func(ctx context.Context, req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) string {
+		if traceExtractor == nil {
+			return ""
+		}
+		traceInfo := traceExtractor(ctx)
+		if traceInfo.TraceID != [16]byte{} {
+			return hex.EncodeToString(traceInfo.TraceID[:])
+		}
+		return ""
+	}
 }
