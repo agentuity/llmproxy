@@ -275,7 +275,7 @@ type Model struct {
 	Attachment       bool        `json:"attachment"`
 	Reasoning        bool        `json:"reasoning"`
 	ToolCall         bool        `json:"tool_call"`
-	Temperature      bool        `json:"temperature"`
+	Temperature      bool        `json:"temperature,omitempty"`
 	Knowledge        string      `json:"knowledge,omitempty"`
 	ReleaseDate      string      `json:"release_date"`
 	LastUpdated      string      `json:"last_updated"`
