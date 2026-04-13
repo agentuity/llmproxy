@@ -43,9 +43,16 @@ func TestResolver_PerplexityURL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "https://api.perplexity.ai/v1/chat/completions"
+	expected := "https://api.perplexity.ai/v1/sonar"
 	if u.String() != expected {
 		t.Errorf("URL = %q, want %q", u.String(), expected)
+	}
+}
+
+func TestResolver_InvalidURL(t *testing.T) {
+	_, err := NewResolver("://invalid-url")
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
 	}
 }
 
@@ -56,7 +63,7 @@ func TestEnricher_SetsAuthorization(t *testing.T) {
 	}
 
 	enricher := provider.RequestEnricher()
-	req := httptest.NewRequest("POST", "https://api.perplexity.ai/v1/chat/completions", nil)
+	req := httptest.NewRequest("POST", "https://api.perplexity.ai/v1/sonar", nil)
 
 	err = enricher.Enrich(req, llmproxy.BodyMetadata{}, nil)
 	if err != nil {
