@@ -87,4 +87,17 @@ func TestNew_EmptyKey(t *testing.T) {
 	if provider.Name() != "perplexity" {
 		t.Errorf("Name = %q, want %q", provider.Name(), "perplexity")
 	}
+
+	enricher := provider.RequestEnricher()
+	req := httptest.NewRequest("POST", "https://api.perplexity.ai/v1/sonar", nil)
+	req.Header.Set("Authorization", "Bearer incoming-token")
+
+	err = enricher.Enrich(req, llmproxy.BodyMetadata{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if auth := req.Header.Get("Authorization"); auth != "" {
+		t.Errorf("Authorization = %q, want empty (header should be deleted for empty key)", auth)
+	}
 }
