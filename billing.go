@@ -49,13 +49,15 @@ type BillingResult struct {
 func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, completionTokens int, cacheUsage *CacheUsage) BillingResult {
 	cachedTokens := 0
 	if cacheUsage != nil {
-		// Normalize cached token count across providers:
-		// - OpenAI/Fireworks/Bedrock: CachedTokens
-		// - Anthropic: CacheReadInputTokens
+		// Providers populate only one of these fields — OpenAI/Fireworks/Bedrock
+		// set CachedTokens while Anthropic sets CacheReadInputTokens. We sum them
+		// so the same code path works for any provider. The clamp below guards
+		// against overcounting if a future provider ever sets both fields.
 		cachedTokens = cacheUsage.CachedTokens + cacheUsage.CacheReadInputTokens
 	}
 
-	// Ensure cached tokens don't exceed prompt tokens
+	// Clamp to prompt tokens as a safety net — cached tokens can never
+	// exceed the total prompt tokens the provider reported.
 	if cachedTokens > promptTokens {
 		cachedTokens = promptTokens
 	}
