@@ -29,19 +29,52 @@ type BillingResult struct {
 	PromptTokens int
 	// CompletionTokens is the number of output tokens.
 	CompletionTokens int
+	// CachedTokens is the number of prompt tokens served from cache.
+	CachedTokens int
 	// TotalTokens is the sum of prompt and completion tokens.
 	TotalTokens int
-	// InputCost is the calculated input cost in USD.
+	// InputCost is the calculated input cost in USD (non-cached prompt tokens).
 	InputCost float64
+	// CachedInputCost is the cost for cached prompt tokens in USD.
+	CachedInputCost float64
 	// OutputCost is the calculated output cost in USD.
 	OutputCost float64
-	// TotalCost is the sum of input and output cost in USD.
+	// TotalCost is the sum of all costs in USD.
 	TotalCost float64
 }
 
-// CalculateCost computes the billing result from cost info and token usage.
-func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, completionTokens int) BillingResult {
-	inputCost := costInfo.Input * float64(promptTokens) / 1_000_000
+// CalculateCost computes the billing result from cost info, token usage, and cache usage.
+// Cached tokens are billed at the CacheRead rate (if available), and non-cached prompt
+// tokens are billed at the full Input rate.
+func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, completionTokens int, cacheUsage *CacheUsage) BillingResult {
+	cachedTokens := 0
+	if cacheUsage != nil {
+		// Normalize cached token count across providers:
+		// - OpenAI/Fireworks/Bedrock: CachedTokens
+		// - Anthropic: CacheReadInputTokens
+		cachedTokens = cacheUsage.CachedTokens + cacheUsage.CacheReadInputTokens
+	}
+
+	// Ensure cached tokens don't exceed prompt tokens
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
+	}
+
+	nonCachedTokens := promptTokens - cachedTokens
+
+	// Non-cached prompt tokens at full input rate
+	inputCost := costInfo.Input * float64(nonCachedTokens) / 1_000_000
+
+	// Cached tokens at cache read rate (falls back to full input rate if no cache pricing)
+	var cachedInputCost float64
+	if cachedTokens > 0 {
+		cacheRate := costInfo.CacheRead
+		if cacheRate <= 0 {
+			cacheRate = costInfo.Input // fallback to full rate
+		}
+		cachedInputCost = cacheRate * float64(cachedTokens) / 1_000_000
+	}
+
 	outputCost := costInfo.Output * float64(completionTokens) / 1_000_000
 
 	return BillingResult{
@@ -49,9 +82,11 @@ func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, comp
 		Model:            model,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		CachedTokens:     cachedTokens,
 		TotalTokens:      promptTokens + completionTokens,
 		InputCost:        inputCost,
+		CachedInputCost:  cachedInputCost,
 		OutputCost:       outputCost,
-		TotalCost:        inputCost + outputCost,
+		TotalCost:        inputCost + cachedInputCost + outputCost,
 	}
 }
