@@ -18,8 +18,10 @@ type Enricher struct {
 //   - Authorization: Bearer <APIKey>
 //   - Content-Type: application/json
 func (e *Enricher) Enrich(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) error {
-	req.Header.Set("Authorization", "Bearer "+e.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+	if e.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+e.APIKey)
+	}
 	return nil
 }
 

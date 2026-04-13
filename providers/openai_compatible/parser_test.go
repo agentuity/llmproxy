@@ -177,8 +177,11 @@ func TestEnricher_EmptyKey(t *testing.T) {
 	}
 
 	auth := req.Header.Get("Authorization")
-	if auth != "Bearer " {
-		t.Errorf("Authorization = %q, want %q", auth, "Bearer ")
+	if auth != "" {
+		t.Errorf("Authorization = %q, want empty (no header set for empty key)", auth)
+	}
+	if ct := req.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 }
 
@@ -443,13 +446,17 @@ func TestProvider_NewInvalidURL(t *testing.T) {
 }
 
 func TestProvider_NewWithProvider(t *testing.T) {
+	parser := &Parser{}
 	base := llmproxy.NewBaseProvider("custom",
-		llmproxy.WithBodyParser(&Parser{}),
+		llmproxy.WithBodyParser(parser),
 	)
 
 	provider := NewWithProvider("custom", base)
 	if provider.Name() != "custom" {
 		t.Errorf("Name = %q, want %q", provider.Name(), "custom")
+	}
+	if provider.BodyParser() != parser {
+		t.Errorf("BodyParser not preserved: got %v, want %v", provider.BodyParser(), parser)
 	}
 }
 

@@ -70,10 +70,11 @@ func TestAddHeaderInterceptor_RequestHeaders(t *testing.T) {
 		return resp, llmproxy.ResponseMetadata{}, nil, nil
 	}
 
-	_, _, _, err := add.Intercept(req, llmproxy.BodyMetadata{}, nil, next)
+	resp, _, _, err := add.Intercept(req, llmproxy.BodyMetadata{}, nil, next)
 	if err != nil {
 		t.Fatalf("Intercept returned error: %v", err)
 	}
+	resp.Body.Close()
 
 	if got := capturedReq.Header.Get("X-Client-ID"); got != "my-app" {
 		t.Errorf("X-Client-ID header = %q, want %q", got, "my-app")
@@ -139,10 +140,11 @@ func TestAddHeaderInterceptor_Empty(t *testing.T) {
 		return resp, llmproxy.ResponseMetadata{}, nil, nil
 	}
 
-	_, _, _, err := add.Intercept(req, llmproxy.BodyMetadata{}, nil, next)
+	resp, _, _, err := add.Intercept(req, llmproxy.BodyMetadata{}, nil, next)
 	if err != nil {
 		t.Fatalf("Intercept returned error: %v", err)
 	}
+	resp.Body.Close()
 }
 
 func TestAddHeaderInterceptor_ErrorPassthrough(t *testing.T) {

@@ -346,7 +346,7 @@ func TestRetryInterceptor_RetryAfterHeader(t *testing.T) {
 
 func TestRetryInterceptor_RetryAfterDateHeader(t *testing.T) {
 	callCount := 0
-	retryAfterSeconds := 2
+	retryAfterSeconds := 3
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		if callCount == 1 {
@@ -377,7 +377,7 @@ func TestRetryInterceptor_RetryAfterDateHeader(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2", callCount)
 	}
-	expectedMin := time.Duration(retryAfterSeconds)*time.Second - 500*time.Millisecond
+	expectedMin := time.Duration(retryAfterSeconds)*time.Second - time.Second
 	if elapsed < expectedMin {
 		t.Errorf("elapsed = %v, should have waited for Retry-After date (at least %v)", elapsed, expectedMin)
 	}
@@ -534,6 +534,17 @@ func TestParseRetryAfterHeader_RetryAfterPreferred(t *testing.T) {
 	delay := parseRetryAfterHeader(resp)
 	if delay != 10*time.Second {
 		t.Errorf("delay = %v, want 10s (Retry-After takes precedence)", delay)
+	}
+}
+
+func TestParseRetryAfterHeader_MalformedRetryAfterFallsBack(t *testing.T) {
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("Retry-After", "invalid")
+	resp.Header.Set("X-RateLimit-Reset", "30")
+
+	delay := parseRetryAfterHeader(resp)
+	if delay != 30*time.Second {
+		t.Errorf("delay = %v, want 30s (should fall back to X-RateLimit-Reset when Retry-After is malformed)", delay)
 	}
 }
 

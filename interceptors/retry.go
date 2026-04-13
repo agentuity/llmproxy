@@ -52,6 +52,11 @@ func (i *RetryInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMetada
 		if !isRetryable(lastResp, lastErr) {
 			return lastResp, lastMeta, lastRawRespBody, lastErr
 		}
+
+		if lastResp != nil && lastResp.Body != nil {
+			io.Copy(io.Discard, lastResp.Body)
+			lastResp.Body.Close()
+		}
 	}
 
 	return lastResp, lastMeta, lastRawRespBody, lastErr
@@ -73,23 +78,27 @@ func isContextError(err error) bool {
 
 func parseRetryAfterHeader(resp *http.Response) time.Duration {
 	retryAfter := resp.Header.Get("Retry-After")
-	if retryAfter == "" {
-		retryAfter = resp.Header.Get("X-RateLimit-Reset")
-	}
-	if retryAfter == "" {
-		return 0
-	}
+	if retryAfter != "" {
+		if seconds, err := strconv.Atoi(retryAfter); err == nil {
+			if seconds > 0 && seconds <= 86400 {
+				return time.Duration(seconds) * time.Second
+			}
+		}
 
-	if seconds, err := strconv.Atoi(retryAfter); err == nil {
-		if seconds > 0 && seconds <= 86400 {
-			return time.Duration(seconds) * time.Second
+		if t, err := http.ParseTime(retryAfter); err == nil {
+			delay := time.Until(t)
+			if delay > 0 && delay <= 24*time.Hour {
+				return delay
+			}
 		}
 	}
 
-	if t, err := http.ParseTime(retryAfter); err == nil {
-		delay := time.Until(t)
-		if delay > 0 && delay <= 24*time.Hour {
-			return delay
+	xRateLimitReset := resp.Header.Get("X-RateLimit-Reset")
+	if xRateLimitReset != "" {
+		if seconds, err := strconv.Atoi(xRateLimitReset); err == nil {
+			if seconds > 0 && seconds <= 86400 {
+				return time.Duration(seconds) * time.Second
+			}
 		}
 	}
 
