@@ -119,6 +119,156 @@ func TestBillingInterceptor_ErrorPassthrough(t *testing.T) {
 	}
 }
 
+func TestBillingInterceptor_WithCacheUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	var result llmproxy.BillingResult
+	lookup := func(provider, model string) (llmproxy.CostInfo, bool) {
+		return llmproxy.CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}, true
+	}
+
+	billing := NewBilling(lookup, func(r llmproxy.BillingResult) {
+		result = r
+	})
+
+	req, _ := http.NewRequest("POST", upstream.URL, nil)
+	meta := llmproxy.BodyMetadata{Model: "gpt-4o"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		respMeta := llmproxy.ResponseMetadata{
+			Usage:  llmproxy.Usage{PromptTokens: 2000, CompletionTokens: 100, TotalTokens: 2100},
+			Custom: map[string]any{"cache_usage": llmproxy.CacheUsage{CachedTokens: 1920}},
+		}
+		return resp, respMeta, nil, nil
+	}
+
+	_, _, _, err := billing.Intercept(req, meta, nil, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+
+	if result.CachedTokens != 1920 {
+		t.Errorf("CachedTokens = %d, want 1920", result.CachedTokens)
+	}
+
+	// 80 non-cached at $3/M, 1920 cached at $1.5/M
+	expectedInput := 3.0 * 80 / 1_000_000
+	expectedCached := 1.5 * 1920 / 1_000_000
+	expectedOutput := 15.0 * 100 / 1_000_000
+
+	if math.Abs(result.InputCost-expectedInput) > 1e-9 {
+		t.Errorf("InputCost = %f, want %f", result.InputCost, expectedInput)
+	}
+	if math.Abs(result.CachedInputCost-expectedCached) > 1e-9 {
+		t.Errorf("CachedInputCost = %f, want %f", result.CachedInputCost, expectedCached)
+	}
+	if math.Abs(result.TotalCost-(expectedInput+expectedCached+expectedOutput)) > 1e-9 {
+		t.Errorf("TotalCost = %f, want %f", result.TotalCost, expectedInput+expectedCached+expectedOutput)
+	}
+}
+
+func TestBillingInterceptor_CacheUsageZeroTokens(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	var result llmproxy.BillingResult
+	lookup := func(provider, model string) (llmproxy.CostInfo, bool) {
+		return llmproxy.CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}, true
+	}
+
+	billing := NewBilling(lookup, func(r llmproxy.BillingResult) {
+		result = r
+	})
+
+	req, _ := http.NewRequest("POST", upstream.URL, nil)
+	meta := llmproxy.BodyMetadata{Model: "gpt-4o"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		// Cache usage present but zero tokens
+		respMeta := llmproxy.ResponseMetadata{
+			Usage:  llmproxy.Usage{PromptTokens: 1000, CompletionTokens: 50},
+			Custom: map[string]any{"cache_usage": llmproxy.CacheUsage{}},
+		}
+		return resp, respMeta, nil, nil
+	}
+
+	_, _, _, err := billing.Intercept(req, meta, nil, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+
+	if result.CachedTokens != 0 {
+		t.Errorf("CachedTokens = %d, want 0", result.CachedTokens)
+	}
+	if result.CachedInputCost != 0 {
+		t.Errorf("CachedInputCost = %f, want 0", result.CachedInputCost)
+	}
+	// All tokens at full input rate
+	expectedInput := 3.0 * 1000 / 1_000_000
+	if math.Abs(result.InputCost-expectedInput) > 1e-9 {
+		t.Errorf("InputCost = %f, want %f", result.InputCost, expectedInput)
+	}
+}
+
+func TestBillingInterceptor_NoCacheUsageInCustom(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	var result llmproxy.BillingResult
+	lookup := func(provider, model string) (llmproxy.CostInfo, bool) {
+		return llmproxy.CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}, true
+	}
+
+	billing := NewBilling(lookup, func(r llmproxy.BillingResult) {
+		result = r
+	})
+
+	req, _ := http.NewRequest("POST", upstream.URL, nil)
+	meta := llmproxy.BodyMetadata{Model: "gpt-4o"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		// No Custom map at all
+		respMeta := llmproxy.ResponseMetadata{
+			Usage: llmproxy.Usage{PromptTokens: 1000, CompletionTokens: 50},
+		}
+		return resp, respMeta, nil, nil
+	}
+
+	_, _, _, err := billing.Intercept(req, meta, nil, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+
+	if result.CachedTokens != 0 {
+		t.Errorf("CachedTokens = %d, want 0", result.CachedTokens)
+	}
+	expectedInput := 3.0 * 1000 / 1_000_000
+	if math.Abs(result.InputCost-expectedInput) > 1e-9 {
+		t.Errorf("InputCost = %f, want %f", result.InputCost, expectedInput)
+	}
+}
+
 func TestDetectProvider(t *testing.T) {
 	tests := []struct {
 		model    string
