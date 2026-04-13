@@ -52,12 +52,33 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		})
 	}
 
-	// Store additional metrics
 	if bedrockResp.Metrics != nil {
 		meta.Custom["latency_ms"] = bedrockResp.Metrics.LatencyMs
 	}
 
+	if bedrockResp.Usage.CacheReadInputTokens > 0 || bedrockResp.Usage.CacheWriteInputTokens > 0 {
+		meta.Custom["cache_usage"] = llmproxy.CacheUsage{
+			CachedTokens:     bedrockResp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: bedrockResp.Usage.CacheWriteInputTokens,
+			CacheDetails:     extractCacheDetails(bedrockResp.Usage.CacheDetails),
+		}
+	}
+
 	return meta, body, nil
+}
+
+func extractCacheDetails(details []CacheDetail) []llmproxy.CacheDetail {
+	if len(details) == 0 {
+		return nil
+	}
+	result := make([]llmproxy.CacheDetail, len(details))
+	for i, d := range details {
+		result[i] = llmproxy.CacheDetail{
+			TTL:              d.TTL,
+			CacheWriteTokens: d.CacheWriteInputTokens,
+		}
+	}
+	return result
 }
 
 func extractOutputText(content []ContentBlock) string {
@@ -93,9 +114,18 @@ type OutputMessage struct {
 
 // ResponseUsage contains token usage information.
 type ResponseUsage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
-	TotalTokens  int `json:"totalTokens"`
+	InputTokens           int           `json:"inputTokens"`
+	OutputTokens          int           `json:"outputTokens"`
+	TotalTokens           int           `json:"totalTokens"`
+	CacheReadInputTokens  int           `json:"cacheReadInputTokens,omitempty"`
+	CacheWriteInputTokens int           `json:"cacheWriteInputTokens,omitempty"`
+	CacheDetails          []CacheDetail `json:"cacheDetails,omitempty"`
+}
+
+// CacheDetail contains cache details for a checkpoint.
+type CacheDetail struct {
+	TTL                   string `json:"ttl"`
+	CacheWriteInputTokens int    `json:"cacheWriteInputTokens"`
 }
 
 // ResponseMetrics contains performance metrics.

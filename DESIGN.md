@@ -119,6 +119,25 @@ The main entry point. `Forward(ctx, req)` orchestrates the full request lifecycl
 | completionTokens | int | Output tokens generated |
 | totalTokens | int | Sum of prompt + completion |
 
+### CacheUsage
+
+| Field | Type | Description |
+|-------|------|-------------|
+| cachedTokens | int | Tokens served from cache (OpenAI, Azure) |
+| cacheCreationInputTokens | int | Tokens written to cache (Anthropic) |
+| cacheReadInputTokens | int | Tokens read from cache (Anthropic) |
+| ephemeral5mInputTokens | int | 5-minute cache write tokens (Anthropic) |
+| ephemeral1hInputTokens | int | 1-hour cache write tokens (Anthropic) |
+| cacheWriteTokens | int | Tokens written to cache (Bedrock) |
+| cacheDetails | []CacheDetail | TTL-based cache write breakdown (Bedrock) |
+
+### CacheDetail
+
+| Field | Type | Description |
+|-------|------|-------------|
+| ttl | string | Time-to-live for cache entry (e.g., "5m", "1h") |
+| cacheWriteTokens | int | Tokens written to cache at this TTL |
+
 ### Choice
 
 | Field | Type | Description |
@@ -276,7 +295,7 @@ URL format: `https://{resource}.openai.azure.com/openai/deployments/{deployment}
 
 ## Interceptors
 
-Seven built-in interceptors are provided in the `interceptors/` package.
+Eight built-in interceptors are provided in the `interceptors/` package.
 
 ### Logging
 
@@ -415,6 +434,220 @@ add := interceptors.NewAddResponseHeader(
 proxy := llmproxy.NewProxy(provider, llmproxy.WithInterceptor(add))
 ```
 
+### PromptCaching
+
+Provider-specific prompt caching interceptors for Anthropic, OpenAI, xAI, Fireworks, and AWS Bedrock.
+
+#### Common Behavior
+
+- **Cache-Control header:** If the incoming request has `Cache-Control: no-cache`, the interceptor skips entirely — letting clients disable caching per-request
+- **Provider detection:** Only applies to matching models:
+  - Anthropic: `claude-*`
+  - OpenAI: `gpt-*`, `o1-*`, `o3-*`, `o4-*`, `chatgpt-*`
+  - xAI: `grok-*`
+  - Fireworks: `accounts/fireworks/*`, `fireworks*`
+  - Bedrock: `anthropic.claude-*`, `amazon.nova-*`, `amazon.titan-*`
+- **Cache usage tracking:** Response metadata includes `CacheUsage` in `Custom["cache_usage"]`
+
+#### Anthropic
+
+`NewAnthropicPromptCaching(retention)` — Enables Anthropic prompt caching:
+
+- **Automatic caching:** Adds `cache_control` at the top level of requests
+- **Retention options:** 
+  - `CacheRetentionDefault` (default, 5 min) — no TTL field, free, auto-refreshed on use
+  - `CacheRetention1h` — adds `ttl: "1h"`, costs more, longer cache lifetime
+- **User-controlled caching:** If request already has `cache_control`, the interceptor skips entirely — letting you control caching explicitly via block-level breakpoints
+
+Example:
+
+```go
+// Enable prompt caching for Anthropic (default 5 min, free)
+caching := interceptors.NewAnthropicPromptCaching(interceptors.CacheRetentionDefault)
+proxy := llmproxy.NewProxy(provider, llmproxy.WithInterceptor(caching))
+
+// With 1h retention (costs more) and cache usage callback
+caching := interceptors.NewAnthropicPromptCachingWithResult(interceptors.CacheRetention1h, func(u llmproxy.CacheUsage) {
+    log.Printf("Cache read: %d tokens, Cache write: %d tokens", u.CacheReadInputTokens, u.CacheCreationInputTokens)
+})
+```
+
+#### OpenAI
+
+`NewOpenAIPromptCaching(retention, cacheKey)` — Enables OpenAI prompt caching:
+
+- **Automatic caching:** OpenAI caches prompts ≥ 1024 tokens automatically
+- **Cache routing:** Adds `prompt_cache_key` to improve cache hit rates for requests with common prefixes
+- **Retention options:** 
+  - `CacheRetentionDefault` (default, in-memory, 5-10 min) — no retention field
+  - `CacheRetention24h` — adds `prompt_cache_retention: "24h"` for GPT-5.x and GPT-4.1
+- **Cache key sources (in priority order):**
+  1. `X-Cache-Key` header from incoming request
+  2. Configured `CacheKey` in PromptCachingConfig
+  3. Auto-derived from static content prefix via `DeriveCacheKeyFromPrefix()`
+- **Tenant namespacing:** Cache keys are automatically prefixed with org/tenant ID from:
+  1. Custom `OrgIDExtractor` function
+  2. `OrgID` in `MetaContextValue` stored in request context
+  3. `X-Org-ID` header
+  4. `org_id` in `BodyMetadata.Custom`
+  5. Configured `Namespace` fallback
+
+Example:
+
+```go
+// Enable prompt caching for OpenAI with a cache key (default retention)
+caching := interceptors.NewOpenAIPromptCaching(interceptors.CacheRetentionDefault, "my-app-session-123")
+proxy := llmproxy.NewProxy(provider, llmproxy.WithInterceptor(caching))
+
+// With 24h retention and cache usage callback
+caching := interceptors.NewOpenAIPromptCachingWithResult(interceptors.CacheRetention24h, "my-key", func(u llmproxy.CacheUsage) {
+    log.Printf("Cached tokens: %d", u.CachedTokens)
+})
+
+// Auto-derive cache key from static content, namespace by tenant
+caching := interceptors.NewOpenAIPromptCachingAuto("tenant-123", interceptors.CacheRetentionDefault)
+
+// Custom org ID extractor (e.g., from auth context)
+caching := interceptors.NewOpenAIPromptCachingWithOrgExtractor(
+    interceptors.CacheRetentionDefault, 
+    "my-key",
+    func(ctx context.Context, req *http.Request, meta llmproxy.BodyMetadata) string {
+        return getOrgFromAuthContext(ctx)
+    },
+)
+```
+
+#### xAI (Grok)
+
+`NewXAIPromptCaching(convID)` — Enables xAI/Grok prompt caching:
+
+- **Automatic prefix caching:** xAI caches from the start of the messages array automatically
+- **Cache routing:** Adds `x-grok-conv-id` HTTP header to route requests to the same server where cache lives
+- **Conversation ID:** Use a stable value (conversation ID, session ID, or deterministic hash of static content)
+- **Key rule:** Never reorder or modify earlier messages — only append
+
+Example:
+
+```go
+// Enable prompt caching for xAI with a conversation ID
+caching := interceptors.NewXAIPromptCaching("conv-abc123-tenant456")
+proxy := llmproxy.NewProxy(provider, llmproxy.WithInterceptor(caching))
+
+// With cache usage callback
+caching := interceptors.NewXAIPromptCachingWithResult("my-conv-id", func(u llmproxy.CacheUsage) {
+    log.Printf("Cached tokens: %d", u.CachedTokens)
+})
+```
+
+#### Fireworks
+
+`NewFireworksPromptCaching(sessionID)` — Enables Fireworks prompt caching:
+
+- **Automatic caching:** Fireworks caches prompts with shared prefixes automatically (enabled by default)
+- **Cache routing:** Adds `x-session-affinity` HTTP header to route requests to the same replica
+- **Tenant isolation:** Adds `x-prompt-cache-isolation-key` header set to org/tenant ID for multi-tenant isolation
+- **Cache usage:** Reads `fireworks-cached-prompt-tokens` response header for cache hit tracking
+
+Example:
+
+```go
+// Enable prompt caching for Fireworks with session affinity
+caching := interceptors.NewFireworksPromptCaching("session-abc123")
+proxy := llmproxy.NewProxy(provider, llmproxy.WithInterceptor(caching))
+
+// With org ID extractor for tenant isolation
+caching := interceptors.NewFireworksPromptCachingWithOrgExtractor("session-abc123", func(ctx context.Context, req *http.Request, meta llmproxy.BodyMetadata) string {
+    return getOrgFromAuthContext(ctx)
+})
+
+// With cache usage callback
+caching := interceptors.NewFireworksPromptCachingWithResult("session-abc123", func(u llmproxy.CacheUsage) {
+    log.Printf("Cached tokens: %d", u.CachedTokens)
+})
+```
+
+#### AWS Bedrock
+
+`NewBedrockPromptCaching(retention)` — Enables AWS Bedrock prompt caching via the Converse API:
+
+- **Cache checkpoints:** Adds `cachePoint` objects to system, messages, and toolConfig
+- **Retention options:**
+  - `CacheRetentionDefault` (default, 5 min) — no TTL field
+  - `CacheRetention1h` — adds `ttl: "1h"` for Claude Opus 4.5, Haiku 4.5, and Sonnet 4.5
+- **Minimum tokens:** 1,024 tokens per cache checkpoint (varies by model)
+- **Maximum checkpoints:** 4 per request
+- **Supported models:** Claude models (anthropic.claude-*), Nova models (amazon.nova-*), Titan models (amazon.titan-*)
+- **Cache usage:** Reads `cacheReadInputTokens`, `cacheWriteInputTokens`, and `cacheDetails` from response
+
+Example:
+
+```go
+// Enable prompt caching for Bedrock (default 5 min)
+caching := interceptors.NewBedrockPromptCaching(interceptors.CacheRetentionDefault)
+proxy := llmproxy.NewProxy(bedrockProvider, llmproxy.WithInterceptor(caching))
+
+// With 1h retention for Claude Opus 4.5
+caching := interceptors.NewBedrockPromptCaching(interceptors.CacheRetention1h)
+
+// With cache usage callback
+caching := interceptors.NewBedrockPromptCachingWithResult(interceptors.CacheRetentionDefault, func(u llmproxy.CacheUsage) {
+    log.Printf("Cache read: %d tokens, Cache write: %d tokens", u.CachedTokens, u.CacheWriteTokens)
+    for _, detail := range u.CacheDetails {
+        log.Printf("  TTL %s: %d tokens written", detail.TTL, detail.CacheWriteTokens)
+    }
+})
+```
+
+#### Azure OpenAI
+
+Azure OpenAI uses the same `prompt_cache_key` body parameter as OpenAI. **Use the OpenAI interceptor** for Azure OpenAI:
+
+```go
+// Azure OpenAI prompt caching uses the OpenAI interceptor
+caching := interceptors.NewOpenAIPromptCaching(interceptors.CacheRetentionDefault, "my-cache-key")
+proxy := llmproxy.NewProxy(azureProvider, llmproxy.WithInterceptor(caching))
+```
+
+**Note:** Azure OpenAI caches prompts ≥ 1,024 tokens automatically. The `prompt_cache_key` parameter is combined with the prefix hash to improve cache hit rates. Cache hits appear as `cached_tokens` in `prompt_tokens_details` in the response.
+
+#### Generic constructor
+
+`NewPromptCaching(provider, config)` — Creates a caching interceptor for any provider:
+
+```go
+// Anthropic with 1h retention
+caching := interceptors.NewPromptCaching("anthropic", interceptors.PromptCachingConfig{
+    Enabled:   true,
+    Retention: interceptors.CacheRetention1h,
+})
+
+// OpenAI with 24h retention
+caching := interceptors.NewPromptCaching("openai", interceptors.PromptCachingConfig{
+    Enabled:   true,
+    Retention: interceptors.CacheRetention24h,
+    CacheKey:  "my-cache-key",
+})
+
+// xAI with conversation ID
+caching := interceptors.NewPromptCaching("xai", interceptors.PromptCachingConfig{
+    Enabled:  true,
+    CacheKey: "my-conv-id",
+})
+
+// Fireworks with session ID and org extractor
+caching := interceptors.NewPromptCaching("fireworks", interceptors.PromptCachingConfig{
+    Enabled:  true,
+    CacheKey: "my-session-id",
+    OrgIDExtractor: interceptors.DefaultOrgIDExtractor,
+})
+
+// Bedrock with 1h retention
+caching := interceptors.NewPromptCaching("bedrock", interceptors.PromptCachingConfig{
+    Enabled:   true,
+    Retention: interceptors.CacheRetention1h,
+})
+```
+
 ---
 
 ## Pricing System
@@ -503,6 +736,7 @@ llmproxy/
 │   ├── headerban.go        # HeaderBanInterceptor
 │   ├── logging.go          # LoggingInterceptor
 │   ├── metrics.go          # MetricsInterceptor, Metrics
+│   ├── promptcaching.go    # PromptCachingInterceptor
 │   ├── retry.go            # RetryInterceptor
 │   └── tracing.go          # TracingInterceptor
 ├── pricing/
