@@ -47,9 +47,9 @@ func TestAddHeaderInterceptor_ResponseHeaders(t *testing.T) {
 }
 
 func TestAddHeaderInterceptor_RequestHeaders(t *testing.T) {
-	var capturedReq *http.Request
+	reqCh := make(chan *http.Request, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedReq = r
+		reqCh <- r
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -76,6 +76,7 @@ func TestAddHeaderInterceptor_RequestHeaders(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	capturedReq := <-reqCh
 	if got := capturedReq.Header.Get("X-Client-ID"); got != "my-app" {
 		t.Errorf("X-Client-ID header = %q, want %q", got, "my-app")
 	}
@@ -88,9 +89,9 @@ func TestAddHeaderInterceptor_RequestHeaders(t *testing.T) {
 }
 
 func TestAddHeaderInterceptor_Both(t *testing.T) {
-	var capturedReq *http.Request
+	reqCh := make(chan *http.Request, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedReq = r
+		reqCh <- r
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -115,6 +116,7 @@ func TestAddHeaderInterceptor_Both(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
+	capturedReq := <-reqCh
 	if got := capturedReq.Header.Get("X-Request-ID"); got != "req-123" {
 		t.Errorf("Request X-Request-ID header = %q, want %q", got, "req-123")
 	}

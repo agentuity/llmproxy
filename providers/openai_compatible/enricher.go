@@ -21,6 +21,8 @@ func (e *Enricher) Enrich(req *http.Request, meta llmproxy.BodyMetadata, rawBody
 	req.Header.Set("Content-Type", "application/json")
 	if e.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.APIKey)
+	} else {
+		req.Header.Del("Authorization")
 	}
 	return nil
 }

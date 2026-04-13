@@ -170,6 +170,7 @@ func TestEnricher_SetsHeaders(t *testing.T) {
 func TestEnricher_EmptyKey(t *testing.T) {
 	enricher := NewEnricher("")
 	req := httptest.NewRequest("POST", "https://example.com", nil)
+	req.Header.Set("Authorization", "Bearer incoming-token")
 
 	err := enricher.Enrich(req, llmproxy.BodyMetadata{}, nil)
 	if err != nil {
@@ -178,7 +179,7 @@ func TestEnricher_EmptyKey(t *testing.T) {
 
 	auth := req.Header.Get("Authorization")
 	if auth != "" {
-		t.Errorf("Authorization = %q, want empty (no header set for empty key)", auth)
+		t.Errorf("Authorization = %q, want empty (header should be deleted for empty key)", auth)
 	}
 	if ct := req.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
