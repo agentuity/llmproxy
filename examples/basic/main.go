@@ -35,6 +35,7 @@ import (
 	"github.com/agentuity/llmproxy/providers/googleai"
 	"github.com/agentuity/llmproxy/providers/groq"
 	"github.com/agentuity/llmproxy/providers/openai"
+	"github.com/agentuity/llmproxy/providers/perplexity"
 	"github.com/agentuity/llmproxy/providers/xai"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -112,6 +113,15 @@ func main() {
 		logr.Info("Registered: x.AI")
 	}
 
+	if apiKey := os.Getenv("PERPLEXITY_API_KEY"); apiKey != "" {
+		provider, err := perplexity.New(apiKey)
+		if err != nil {
+			log.Fatalf("failed to create perplexity provider: %v", err)
+		}
+		registry.Register(provider)
+		logr.Info("Registered: Perplexity")
+	}
+
 	if apiKey := os.Getenv("GOOGLE_AI_API_KEY"); apiKey != "" {
 		provider, err := googleai.New(apiKey)
 		if err != nil {
@@ -166,7 +176,7 @@ func main() {
 		openaiProvider, _ = registry.Get("groq")
 	}
 	if openaiProvider == nil {
-		for _, name := range []string{"anthropic", "fireworks", "xai", "googleai"} {
+		for _, name := range []string{"anthropic", "fireworks", "xai", "perplexity", "googleai"} {
 			if p, ok := registry.Get(name); ok {
 				openaiProvider = p
 				break
