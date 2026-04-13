@@ -56,13 +56,24 @@ func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, comp
 		cachedTokens = cacheUsage.CachedTokens + cacheUsage.CacheReadInputTokens
 	}
 
-	// Clamp to prompt tokens as a safety net — cached tokens can never
-	// exceed the total prompt tokens the provider reported.
+	// Providers report prompt tokens differently:
+	//   - OpenAI/Fireworks/Bedrock: promptTokens INCLUDES cached tokens
+	//     → non-cached = promptTokens - cachedTokens
+	//   - Anthropic: input_tokens EXCLUDES cached tokens (only new tokens)
+	//     → non-cached = promptTokens (as reported), cached is additional
+	//
+	// We detect the style by comparing: if cached > prompt, the provider
+	// must be reporting non-cached only (Anthropic style).
+	var nonCachedTokens int
 	if cachedTokens > promptTokens {
-		cachedTokens = promptTokens
+		// Anthropic style: promptTokens = non-cached only, cached is separate
+		nonCachedTokens = promptTokens
+		// Adjust promptTokens to reflect the true total for the BillingResult
+		promptTokens = promptTokens + cachedTokens
+	} else {
+		// OpenAI style: promptTokens includes cached
+		nonCachedTokens = promptTokens - cachedTokens
 	}
-
-	nonCachedTokens := promptTokens - cachedTokens
 
 	// Non-cached prompt tokens at full input rate
 	inputCost := costInfo.Input * float64(nonCachedTokens) / 1_000_000
