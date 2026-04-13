@@ -56,7 +56,7 @@ func main() {
 - **9 Provider Implementations**: OpenAI, Anthropic, Groq, Fireworks, x.AI, Google AI, AWS Bedrock, Azure OpenAI, OpenAI-compatible base
 - **8 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader, PromptCaching
 - **Pricing Integration**: models.dev adapter with markup support
-- **Prompt Caching**: Anthropic and OpenAI prompt caching support
+- **Prompt Caching**: prompt caching support for Anthropic, OpenAI, xAI, Fireworks, and Bedrock
 - **Raw Body Preservation**: Custom JSON fields pass through unchanged
 
 ## Providers

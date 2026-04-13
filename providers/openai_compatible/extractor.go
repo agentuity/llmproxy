@@ -101,12 +101,8 @@ type UsageInfo struct {
 
 // PromptTokensDetails contains detailed prompt token breakdown.
 type PromptTokensDetails struct {
-	CachedTokens             int `json:"cached_tokens,omitempty"`
-	AudioTokens              int `json:"audio_tokens,omitempty"`
-	ImageTokens              int `json:"image_tokens,omitempty"`
-	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
-	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
-	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
 }
 
 // CompletionTokensDetails contains detailed completion token breakdown.

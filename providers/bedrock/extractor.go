@@ -56,7 +56,7 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		meta.Custom["latency_ms"] = bedrockResp.Metrics.LatencyMs
 	}
 
-	if bedrockResp.Usage.CacheReadInputTokens > 0 || bedrockResp.Usage.CacheWriteInputTokens > 0 {
+	if bedrockResp.Usage.CacheReadInputTokens > 0 || bedrockResp.Usage.CacheWriteInputTokens > 0 || len(bedrockResp.Usage.CacheDetails) > 0 {
 		meta.Custom["cache_usage"] = llmproxy.CacheUsage{
 			CachedTokens:     bedrockResp.Usage.CacheReadInputTokens,
 			CacheWriteTokens: bedrockResp.Usage.CacheWriteInputTokens,
