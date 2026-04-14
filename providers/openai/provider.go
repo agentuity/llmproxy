@@ -20,5 +20,5 @@ import (
 //
 //	provider, _ := openai.New("sk-your-openai-api-key")
 func New(apiKey string) (*openai_compatible.Provider, error) {
-	return openai_compatible.New("openai", apiKey, "https://api.openai.com")
+	return openai_compatible.NewMultiAPI("openai", apiKey, "https://api.openai.com")
 }

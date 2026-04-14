@@ -2,7 +2,6 @@ package interceptors
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -25,8 +24,16 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 		return resp, respMeta, rawRespBody, err
 	}
 
-	// Try to get provider name from model prefix
-	provider := detectProvider(meta.Model)
+	// Prefer router-resolved provider from metadata, fall back to model detection
+	var provider string
+	if meta.Custom != nil {
+		if p, ok := meta.Custom["provider"].(string); ok && p != "" {
+			provider = p
+		}
+	}
+	if provider == "" {
+		provider = llmproxy.DetectProviderFromModel(meta.Model)
+	}
 
 	// Look up pricing with provider first
 	costInfo, found := i.Lookup(provider, meta.Model)
@@ -35,7 +42,7 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 		costInfo, found = i.Lookup("", meta.Model)
 	}
 
-	if found && i.OnResult != nil {
+	if found {
 		// Extract cache usage from response metadata if available
 		var cacheUsage *llmproxy.CacheUsage
 		if cu, ok := respMeta.Custom["cache_usage"]; ok {
@@ -44,26 +51,16 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 			}
 		}
 		result := llmproxy.CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
-		i.OnResult(result)
+		if respMeta.Custom == nil {
+			respMeta.Custom = make(map[string]any)
+		}
+		respMeta.Custom["billing_result"] = result
+		if i.OnResult != nil {
+			i.OnResult(result)
+		}
 	}
 
 	return resp, respMeta, rawRespBody, nil
-}
-
-// detectProvider attempts to determine the provider from the model name.
-func detectProvider(model string) string {
-	modelLower := strings.ToLower(model)
-	switch {
-	case strings.Contains(modelLower, "gpt-") || strings.Contains(modelLower, "o1-") || strings.Contains(modelLower, "o3-") || strings.Contains(modelLower, "chatgpt"):
-		return "openai"
-	case strings.Contains(modelLower, "claude"):
-		return "anthropic"
-	case strings.Contains(modelLower, "gemini"):
-		return "google"
-	case strings.Contains(modelLower, "llama") || strings.Contains(modelLower, "mixtral"):
-		return "groq"
-	}
-	return ""
 }
 
 // NewBilling creates a new billing interceptor with the given lookup function.

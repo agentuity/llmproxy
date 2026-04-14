@@ -36,6 +36,22 @@ func New(name, apiKey, baseURL string) (*Provider, error) {
 	}, nil
 }
 
+func NewMultiAPI(name, apiKey, baseURL string) (*Provider, error) {
+	resolver, err := NewResolver(baseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Provider{
+		BaseProvider: llmproxy.NewBaseProvider(name,
+			llmproxy.WithBodyParser(NewMultiAPIParser()),
+			llmproxy.WithRequestEnricher(NewEnricher(apiKey)),
+			llmproxy.WithResponseExtractor(NewMultiAPIExtractor()),
+			llmproxy.WithURLResolver(resolver),
+		),
+	}, nil
+}
+
 // NewWithProvider creates a Provider that wraps an existing BaseProvider.
 // Use this when you need to customize individual components before creating the provider.
 //

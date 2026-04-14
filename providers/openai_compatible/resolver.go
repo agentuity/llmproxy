@@ -6,26 +6,43 @@ import (
 	"github.com/agentuity/llmproxy"
 )
 
-// Resolver implements llmproxy.URLResolver for OpenAI-compatible APIs.
-// It constructs the chat completions endpoint URL from a base URL.
 type Resolver struct {
-	// BaseURL is the provider's API base URL (e.g., "https://api.openai.com").
 	BaseURL *url.URL
+	APIType llmproxy.APIType
 }
 
-// Resolve returns the full URL for the chat completions endpoint.
-// It appends "/v1/chat/completions" to the base URL.
 func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
-	endpoint := r.BaseURL.JoinPath("v1", "chat", "completions")
-	return endpoint, nil
+	apiType := r.APIType
+	if apiType == "" {
+		if v, ok := meta.Custom["api_type"].(llmproxy.APIType); ok {
+			apiType = v
+		} else {
+			apiType = llmproxy.APITypeChatCompletions
+		}
+	}
+
+	switch apiType {
+	case llmproxy.APITypeResponses:
+		return r.BaseURL.JoinPath("v1", "responses"), nil
+	case llmproxy.APITypeCompletions:
+		return r.BaseURL.JoinPath("v1", "completions"), nil
+	default:
+		return r.BaseURL.JoinPath("v1", "chat", "completions"), nil
+	}
 }
 
-// NewResolver creates a new resolver with the given base URL.
-// The baseURL should be the provider's API domain (e.g., "https://api.openai.com").
 func NewResolver(baseURL string) (*Resolver, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
 	return &Resolver{BaseURL: u}, nil
+}
+
+func NewResolverWithAPIType(baseURL string, apiType llmproxy.APIType) (*Resolver, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Resolver{BaseURL: u, APIType: apiType}, nil
 }
