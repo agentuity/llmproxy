@@ -67,11 +67,6 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	}
 	req.Body.Close()
 
-	apiType := DetectAPITypeFromPath(req.URL.Path)
-	if apiType == APITypeChatCompletions {
-		apiType = DetectAPIType(body)
-	}
-
 	var raw map[string]any
 	var model string
 	if err := json.Unmarshal(body, &raw); err == nil {
@@ -101,8 +96,15 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	if raw != nil {
 		if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
 			raw["model"] = strippedModel
+			model = strippedModel
 			body, _ = json.Marshal(raw)
 		}
+	}
+
+	// Detect API type: path takes precedence, then body+provider detection
+	apiType := DetectAPITypeFromPath(req.URL.Path)
+	if apiType == "" {
+		apiType = DetectAPITypeFromBodyAndProvider(body, providerName)
 	}
 
 	meta, _, err := provider.BodyParser().Parse(io.NopCloser(bytes.NewReader(body)))

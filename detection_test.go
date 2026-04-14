@@ -85,9 +85,14 @@ func TestDetectAPITypeFromPath(t *testing.T) {
 			expected: APITypeConverse,
 		},
 		{
-			name:     "unknown path defaults to chat completions",
+			name:     "unknown path returns empty",
 			path:     "/unknown",
-			expected: APITypeChatCompletions,
+			expected: "",
+		},
+		{
+			name:     "root path returns empty",
+			path:     "/",
+			expected: "",
 		},
 	}
 
@@ -183,6 +188,91 @@ func TestDefaultProviderDetector(t *testing.T) {
 			result := DefaultProviderDetector.Detect(tt.hint)
 			if result != tt.expected {
 				t.Errorf("Detect() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDetectAPITypeFromBodyAndProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		provider string
+		expected APIType
+	}{
+		{
+			name:     "openai with messages -> chat completions",
+			body:     `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "openai",
+			expected: APITypeChatCompletions,
+		},
+		{
+			name:     "anthropic with messages -> messages API",
+			body:     `{"model":"claude-3-opus","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "anthropic",
+			expected: APITypeMessages,
+		},
+		{
+			name:     "anthropic with system and messages -> messages API",
+			body:     `{"model":"claude-3-opus","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "anthropic",
+			expected: APITypeMessages,
+		},
+		{
+			name:     "responses API with input",
+			body:     `{"model":"gpt-4o","input":"hello world"}`,
+			provider: "openai",
+			expected: APITypeResponses,
+		},
+		{
+			name:     "legacy completions with prompt",
+			body:     `{"model":"gpt-3.5-turbo-instruct","prompt":"hello"}`,
+			provider: "openai",
+			expected: APITypeCompletions,
+		},
+		{
+			name:     "googleai with contents -> generateContent",
+			body:     `{"model":"gemini-pro","contents":[{"parts":[{"text":"hello"}]}]}`,
+			provider: "googleai",
+			expected: APITypeGenerateContent,
+		},
+		{
+			name:     "groq with messages -> chat completions",
+			body:     `{"model":"llama-3-70b","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "groq",
+			expected: APITypeChatCompletions,
+		},
+		{
+			name:     "bedrock with messages -> converse",
+			body:     `{"model":"anthropic.claude-3","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "bedrock",
+			expected: APITypeConverse,
+		},
+		{
+			name:     "unknown provider with messages -> chat completions",
+			body:     `{"model":"unknown-model","messages":[{"role":"user","content":"hello"}]}`,
+			provider: "",
+			expected: APITypeChatCompletions,
+		},
+		{
+			name:     "system without messages -> chat completions",
+			body:     `{"model":"model","system":"be helpful"}`,
+			provider: "openai",
+			expected: APITypeChatCompletions,
+		},
+		{
+			name:     "invalid JSON -> chat completions",
+			body:     `invalid`,
+			provider: "openai",
+			expected: APITypeChatCompletions,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DetectAPITypeFromBodyAndProvider([]byte(tt.body), tt.provider)
+			if result != tt.expected {
+				t.Errorf("DetectAPITypeFromBodyAndProvider() = %v, want %v", result, tt.expected)
 			}
 		})
 	}
