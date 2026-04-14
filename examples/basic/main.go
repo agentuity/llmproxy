@@ -1,25 +1,8 @@
-// Example_basic demonstrates a basic proxy setup with multiple providers.
-// Providers are configured from standard environment variables.
-//
-// Usage:
-//
-//	export OPENAI_API_KEY=sk-your-key
-//	export MODELS_DEV_JSON=/path/to/models.json  # optional, for billing
-//	go run main.go
-//
-// With OpenTelemetry tracing:
-//
-//	otelExporter, _ := otlptracehttp.New(ctx)
-//	tp := tracesdk.NewTracerProvider(tracesdk.WithBatcher(otelExporter))
-//	defer tp.Shutdown(ctx)
-//	otel.SetTracerProvider(tp)
-//	# Then run the example - traces will be propagated upstream
 package main
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,7 +23,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// consoleLogger implements llmproxy.Logger using log.Default()
 type consoleLogger struct {
 	prefix string
 }
@@ -62,18 +44,16 @@ func (l *consoleLogger) Error(msg string, args ...interface{}) {
 }
 
 func main() {
-	ctx := context.Background()
 	logr := &consoleLogger{prefix: "[llmproxy]"}
 
-	registry := llmproxy.NewRegistry()
+	var providers []llmproxy.Provider
 
-	// Register providers from environment variables
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 		provider, err := openai.New(apiKey)
 		if err != nil {
 			log.Fatalf("failed to create openai provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: OpenAI")
 	}
 
@@ -82,7 +62,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create anthropic provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: Anthropic")
 	}
 
@@ -91,7 +71,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create groq provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: Groq")
 	}
 
@@ -100,7 +80,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create fireworks provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: Fireworks")
 	}
 
@@ -109,7 +89,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create xai provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: x.AI")
 	}
 
@@ -118,7 +98,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create perplexity provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: Perplexity")
 	}
 
@@ -127,13 +107,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create googleai provider: %v", err)
 		}
-		registry.Register(provider)
+		providers = append(providers, provider)
 		logr.Info("Registered: Google AI")
 	}
 
-	// Azure OpenAI
 	if resourceName := os.Getenv("AZURE_OPENAI_RESOURCE"); resourceName != "" {
-		deploymentID := os.Getenv("AZURE_OPENAI_DEPLOYMENT") // optional, uses model from request if empty
+		deploymentID := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
 		apiVersion := os.Getenv("AZURE_OPENAI_API_VERSION")
 		if apiVersion == "" {
 			apiVersion = azure.DefaultAPIVersion()
@@ -149,52 +128,35 @@ func main() {
 			if err != nil {
 				log.Fatalf("failed to create azure provider: %v", err)
 			}
-			registry.Register(provider)
+			providers = append(providers, provider)
 			logr.Info("Registered: Azure OpenAI")
 		}
 	}
 
-	// AWS Bedrock requires multiple environment variables
 	if region := os.Getenv("AWS_REGION"); region != "" {
 		accessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 		secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-		sessionToken := os.Getenv("AWS_SESSION_TOKEN") // Optional
+		sessionToken := os.Getenv("AWS_SESSION_TOKEN")
 
 		if accessKeyID != "" && secretAccessKey != "" {
 			provider, err := bedrock.New(region, accessKeyID, secretAccessKey, sessionToken)
 			if err != nil {
 				log.Fatalf("failed to create bedrock provider: %v", err)
 			}
-			registry.Register(provider)
+			providers = append(providers, provider)
 			logr.Info("Registered: AWS Bedrock")
 		}
 	}
 
-	// Check we have at least one provider
-	openaiProvider, hasOpenAI := registry.Get("openai")
-	if !hasOpenAI {
-		openaiProvider, _ = registry.Get("groq")
-	}
-	if openaiProvider == nil {
-		for _, name := range []string{"anthropic", "fireworks", "xai", "perplexity", "googleai"} {
-			if p, ok := registry.Get(name); ok {
-				openaiProvider = p
-				break
-			}
-		}
-	}
-
-	if openaiProvider == nil {
+	if len(providers) == 0 {
 		log.Fatal("No providers configured. Set at least one API key environment variable.")
 	}
 
-	// Load pricing data from models.dev (optional)
 	var costLookup llmproxy.CostLookup
 	modelsFile := os.Getenv("MODELS_DEV_JSON")
 	modelsURL := os.Getenv("MODELS_DEV_URL")
 
 	if modelsFile != "" {
-		// Load from local file
 		adapter, err := modelsdev.LoadFromFile(modelsFile)
 		if err != nil {
 			log.Printf("Warning: could not load models.dev from file: %v", err)
@@ -203,7 +165,6 @@ func main() {
 			logr.Info("Billing enabled from file: %s", modelsFile)
 		}
 	} else if modelsURL != "" {
-		// Load from custom URL
 		adapter := modelsdev.New(modelsdev.WithURL(modelsURL))
 		if err := adapter.Load(nil); err != nil {
 			log.Printf("Warning: could not load models.dev from URL: %v", err)
@@ -212,7 +173,6 @@ func main() {
 			logr.Info("Billing enabled from URL: %s", modelsURL)
 		}
 	} else {
-		// Try to fetch from models.dev directly
 		adapter, err := modelsdev.LoadFromURL()
 		if err != nil {
 			log.Printf("Warning: could not fetch models.dev: %v (billing disabled)", err)
@@ -237,173 +197,52 @@ func main() {
 		}
 	})
 
-	// OpenAI-compatible endpoint
-	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		provider := openaiProvider
-		opts := []llmproxy.ProxyOption{
-			llmproxy.WithInterceptor(interceptors.NewRetryWithRateLimitHeaders(3, time.Millisecond*250)),
-			llmproxy.WithInterceptor(tracingInterceptor),
-			llmproxy.WithInterceptor(loggingInterceptor),
-			llmproxy.WithInterceptor(interceptors.NewMetrics(metrics)),
-			llmproxy.WithInterceptor(interceptors.NewResponseHeaderBan("Openai-Organization", "Openai-Project", "Set-Cookie")),
-			llmproxy.WithInterceptor(interceptors.NewAddRequestHeader(interceptors.NewHeader("User-Agent", "Agentuity AI Gateway/1.0"))),
-			llmproxy.WithInterceptor(interceptors.NewAddResponseHeader(interceptors.NewHeader("Server", "Agentuity AI Gateway/1.0"))),
-		}
-		if costLookup != nil {
-			opts = append(opts, llmproxy.WithInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
-				logr.Info("Billing: model=%s tokens=%d/%d cost=$%.6f", r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-				w.Header().Set("agentuity-gateway-cost", fmt.Sprintf("%f", r.TotalCost))
-				w.Header().Set("agentuity-gateway-prompt-tokens", fmt.Sprintf("%d", r.PromptTokens))
-				w.Header().Set("agentuity-gateway-completion-tokens", fmt.Sprintf("%d", r.CompletionTokens))
-			})))
-		}
-		proxy := llmproxy.NewProxy(provider, opts...)
-		resp, _, err := proxy.Forward(ctx, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer resp.Body.Close()
-
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
-	})
-
-	// Anthropic endpoint
-	anthropicProvider, hasAnthropic := registry.Get("anthropic")
-	if hasAnthropic {
-		http.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-			opts := []llmproxy.ProxyOption{
-				llmproxy.WithInterceptor(tracingInterceptor),
-				llmproxy.WithInterceptor(loggingInterceptor),
-			}
-			if costLookup != nil {
-				opts = append(opts, llmproxy.WithInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
-					logr.Info("Billing: model=%s tokens=%d/%d cost=$%.6f", r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-				})))
-			}
-			proxy := llmproxy.NewProxy(anthropicProvider, opts...)
-			resp, _, err := proxy.Forward(ctx, r)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
-
-			for k, v := range resp.Header {
-				w.Header()[k] = v
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-		})
+	opts := []llmproxy.AutoRouterOption{
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewRetryWithRateLimitHeaders(3, time.Millisecond*250)),
+		llmproxy.WithAutoRouterInterceptor(tracingInterceptor),
+		llmproxy.WithAutoRouterInterceptor(loggingInterceptor),
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewMetrics(metrics)),
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewResponseHeaderBan("Openai-Organization", "Openai-Project", "Set-Cookie")),
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewAddRequestHeader(interceptors.NewHeader("User-Agent", "Agentuity AI Gateway/1.0"))),
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewAddResponseHeader(interceptors.NewHeader("Server", "Agentuity AI Gateway/1.0"))),
+		llmproxy.WithAutoRouterFallbackProvider(providers[0]),
 	}
 
-	// Google AI endpoint
-	googleaiProvider, hasGoogleAI := registry.Get("googleai")
-	if hasGoogleAI {
-		http.HandleFunc("/v1beta/models/", func(w http.ResponseWriter, r *http.Request) {
-			opts := []llmproxy.ProxyOption{
-				llmproxy.WithInterceptor(tracingInterceptor),
-				llmproxy.WithInterceptor(loggingInterceptor),
-			}
-			if costLookup != nil {
-				opts = append(opts, llmproxy.WithInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
-					logr.Info("Billing: model=%s tokens=%d/%d cost=$%.6f", r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-				})))
-			}
-			proxy := llmproxy.NewProxy(googleaiProvider, opts...)
-			resp, _, err := proxy.Forward(ctx, r)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
-
-			for k, v := range resp.Header {
-				w.Header()[k] = v
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-		})
+	if costLookup != nil {
+		opts = append(opts, llmproxy.WithAutoRouterInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
+			logr.Info("Billing: provider=%s model=%s tokens=%d/%d cost=$%.6f", r.Provider, r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
+		})))
 	}
 
-	// Azure OpenAI endpoint
-	azureProvider, hasAzure := registry.Get("azure")
-	if hasAzure {
-		http.HandleFunc("/azure/openai/deployments/", func(w http.ResponseWriter, r *http.Request) {
-			opts := []llmproxy.ProxyOption{
-				llmproxy.WithInterceptor(tracingInterceptor),
-				llmproxy.WithInterceptor(loggingInterceptor),
-			}
-			if costLookup != nil {
-				opts = append(opts, llmproxy.WithInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
-					logr.Info("Billing: model=%s tokens=%d/%d cost=$%.6f", r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-				})))
-			}
-			proxy := llmproxy.NewProxy(azureProvider, opts...)
-			resp, _, err := proxy.Forward(ctx, r)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
+	router := llmproxy.NewAutoRouter(opts...)
 
-			for k, v := range resp.Header {
-				w.Header()[k] = v
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-		})
+	for _, p := range providers {
+		router.RegisterProvider(p)
 	}
+
+	http.Handle("/", router)
 
 	logr.Info("Proxy listening on :8080")
-	logr.Info("Endpoints:")
-	logr.Info("  POST /v1/chat/completions -> OpenAI-compatible providers")
-	if hasAnthropic {
-		logr.Info("  POST /v1/messages -> Anthropic")
-	}
-	if hasGoogleAI {
-		logr.Info("  POST /v1beta/models/{model}:generateContent -> Google AI")
-	}
-	if hasAzure {
-		logr.Info("  POST /azure/openai/deployments/{deployment}/chat/completions -> Azure OpenAI")
-	}
-
-	// Bedrock endpoint
-	bedrockProvider, hasBedrock := registry.Get("bedrock")
-	if hasBedrock {
-		http.HandleFunc("/model/", func(w http.ResponseWriter, r *http.Request) {
-			// Extract model ID from path: /model/{modelId}/converse or /model/{modelId}/invoke
-			opts := []llmproxy.ProxyOption{
-				llmproxy.WithInterceptor(tracingInterceptor),
-				llmproxy.WithInterceptor(loggingInterceptor),
-			}
-			if costLookup != nil {
-				opts = append(opts, llmproxy.WithInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
-					logr.Info("Billing: model=%s tokens=%d/%d cost=$%.6f", r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-				})))
-			}
-			proxy := llmproxy.NewProxy(bedrockProvider, opts...)
-			resp, _, err := proxy.Forward(ctx, r)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
-
-			for k, v := range resp.Header {
-				w.Header()[k] = v
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-		})
-		if hasBedrock {
-			logr.Info("  POST /model/{modelId}/converse -> AWS Bedrock (Converse API)")
-		}
-	}
+	logr.Info("")
+	logr.Info("Auto-routing enabled - provider detected from:")
+	logr.Info("  1. X-Provider header (explicit override)")
+	logr.Info("  2. Model name pattern (gpt-* -> OpenAI, claude-* -> Anthropic, etc.)")
+	logr.Info("")
+	logr.Info("Supported endpoints:")
+	logr.Info("  POST /v1/chat/completions  (OpenAI Chat Completions API)")
+	logr.Info("  POST /v1/responses         (OpenAI Responses API)")
+	logr.Info("  POST /v1/messages          (Anthropic Messages API)")
+	logr.Info("  POST /v1/completions       (Legacy OpenAI Completions API)")
+	logr.Info("")
+	logr.Info("Example requests:")
+	logr.Info("  curl -X POST http://localhost:8080/v1/chat/completions \\")
+	logr.Info("    -H 'Content-Type: application/json' \\")
+	logr.Info("    -H 'X-Provider: openai' \\")
+	logr.Info("    -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'")
+	logr.Info("")
+	logr.Info("  curl -X POST http://localhost:8080/v1/responses \\")
+	logr.Info("    -H 'Content-Type: application/json' \\")
+	logr.Info("    -d '{\"model\":\"gpt-4o\",\"input\":\"Hello\"}'")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("server error: %v", err)

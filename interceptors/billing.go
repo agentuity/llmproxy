@@ -35,7 +35,7 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 		costInfo, found = i.Lookup("", meta.Model)
 	}
 
-	if found && i.OnResult != nil {
+	if found {
 		// Extract cache usage from response metadata if available
 		var cacheUsage *llmproxy.CacheUsage
 		if cu, ok := respMeta.Custom["cache_usage"]; ok {
@@ -44,7 +44,13 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 			}
 		}
 		result := llmproxy.CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
-		i.OnResult(result)
+		if respMeta.Custom == nil {
+			respMeta.Custom = make(map[string]any)
+		}
+		respMeta.Custom["billing_result"] = result
+		if i.OnResult != nil {
+			i.OnResult(result)
+		}
 	}
 
 	return resp, respMeta, rawRespBody, nil
