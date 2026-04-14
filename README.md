@@ -108,6 +108,7 @@ curl -X POST http://localhost:8080/ \
 - **9 Provider Implementations**: OpenAI, Anthropic, Groq, Fireworks, x.AI, Google AI, AWS Bedrock, Azure OpenAI, OpenAI-compatible base
 - **AutoRouter**: Single endpoint with automatic provider/API detection
 - **Responses API**: Full support for OpenAI's new Responses API
+- **SSE Streaming**: Full streaming support with efficient token usage extraction
 - **8 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader, PromptCaching
 - **Pricing Integration**: models.dev adapter with markup support
 - **Prompt Caching**: prompt caching support for Anthropic, OpenAI, xAI, Fireworks, and Bedrock
@@ -151,6 +152,37 @@ curl -X POST http://localhost:8080/ \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+## Streaming
+
+SSE streaming is fully supported with automatic token usage extraction for billing:
+
+```bash
+# Streaming with automatic usage extraction
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+**Key Features:**
+
+- **Efficient flushing**: Uses `http.ResponseController` for immediate SSE delivery
+- **Token extraction**: Extracts usage from streaming responses for billing
+- **Auto stream_options**: Automatically injects `stream_options.include_usage` when billing is configured
+- **Works with billing**: Billing is calculated after stream completes
+
+**Example with billing:**
+
+```go
+adapter, _ := modelsdev.LoadFromURL()
+billingCallback := func(r llmproxy.BillingResult) {
+    log.Printf("Cost: $%.6f (tokens: %d/%d)", r.TotalCost, r.PromptTokens, r.CompletionTokens)
+}
+
+router := llmproxy.NewAutoRouter(
+    llmproxy.WithAutoRouterBillingCalculator(llmproxy.NewBillingCalculator(adapter.GetCostLookup(), billingCallback)),
+)
 ```
 
 ## Providers
