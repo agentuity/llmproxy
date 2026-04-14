@@ -1,29 +1,52 @@
 package llmproxy
 
-import "net/http"
+import (
+	"io"
+	"net/http"
+)
 
-// ResponseExtractor parses an upstream provider response and extracts metadata.
-//
-// Implementations handle provider-specific response formats and map them
-// to the common ResponseMetadata structure. This allows the proxy to track
-// token usage, costs, and other metrics in a provider-agnostic way.
-//
-// The extractor must return the raw response body bytes so the proxy can
-// re-attach them to the response for the caller. This preserves any
-// custom/unsupported fields in the original JSON.
 type ResponseExtractor interface {
-	// Extract parses the HTTP response and returns unified metadata.
-	//
-	// The method reads and consumes the response body, parses it for metadata,
-	// and returns both the metadata and the raw body bytes. The proxy will
-	// re-attach the raw bytes to the response so the caller can read them.
-	//
-	// Parameters:
-	//   - resp: The HTTP response from the upstream provider
-	//
-	// Returns:
-	//   - metadata: Parsed response metadata (tokens, model, etc.)
-	//   - rawBody: The original response body bytes (must be returned for forwarding)
-	//   - error: Any parsing error
 	Extract(resp *http.Response) (metadata ResponseMetadata, rawBody []byte, err error)
+}
+
+type StreamingResponseExtractor interface {
+	ResponseExtractor
+	ExtractStreamingWithController(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error)
+	IsStreamingResponse(resp *http.Response) bool
+}
+
+type StreamingHandler interface {
+	HandleStream(resp *http.Response, w http.ResponseWriter, meta BodyMetadata) (ResponseMetadata, error)
+}
+
+type DefaultStreamingHandler struct {
+	extractor StreamingResponseExtractor
+}
+
+func NewDefaultStreamingHandler(extractor StreamingResponseExtractor) *DefaultStreamingHandler {
+	return &DefaultStreamingHandler{extractor: extractor}
+}
+
+func (h *DefaultStreamingHandler) HandleStream(resp *http.Response, w http.ResponseWriter, meta BodyMetadata) (ResponseMetadata, error) {
+	rc := http.NewResponseController(w)
+	return h.extractor.ExtractStreamingWithController(resp, w, rc)
+}
+
+type TeeReader struct {
+	r io.Reader
+	w io.Writer
+}
+
+func NewTeeReader(r io.Reader, w io.Writer) *TeeReader {
+	return &TeeReader{r: r, w: w}
+}
+
+func (t *TeeReader) Read(p []byte) (n int, err error) {
+	n, err = t.r.Read(p)
+	if n > 0 {
+		if _, writeErr := t.w.Write(p[:n]); writeErr != nil {
+			return n, writeErr
+		}
+	}
+	return
 }

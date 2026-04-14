@@ -19,7 +19,7 @@ func New(apiKey string) (*Provider, error) {
 		BaseProvider: llmproxy.NewBaseProvider("perplexity",
 			llmproxy.WithBodyParser(&openai_compatible.Parser{}),
 			llmproxy.WithRequestEnricher(openai_compatible.NewEnricher(apiKey)),
-			llmproxy.WithResponseExtractor(openai_compatible.NewExtractor()),
+			llmproxy.WithResponseExtractor(openai_compatible.NewStreamingExtractor()),
 			llmproxy.WithURLResolver(resolver),
 		),
 	}, nil

@@ -30,7 +30,7 @@ func New(name, apiKey, baseURL string) (*Provider, error) {
 		BaseProvider: llmproxy.NewBaseProvider(name,
 			llmproxy.WithBodyParser(&Parser{}),
 			llmproxy.WithRequestEnricher(NewEnricher(apiKey)),
-			llmproxy.WithResponseExtractor(NewExtractor()),
+			llmproxy.WithResponseExtractor(NewStreamingExtractor()),
 			llmproxy.WithURLResolver(resolver),
 		),
 	}, nil
@@ -46,7 +46,7 @@ func NewMultiAPI(name, apiKey, baseURL string) (*Provider, error) {
 		BaseProvider: llmproxy.NewBaseProvider(name,
 			llmproxy.WithBodyParser(NewMultiAPIParser()),
 			llmproxy.WithRequestEnricher(NewEnricher(apiKey)),
-			llmproxy.WithResponseExtractor(NewMultiAPIExtractor()),
+			llmproxy.WithResponseExtractor(NewStreamingMultiAPIExtractor()),
 			llmproxy.WithURLResolver(resolver),
 		),
 	}, nil

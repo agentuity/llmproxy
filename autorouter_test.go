@@ -66,6 +66,32 @@ func (m *mockExtractor) Extract(resp *http.Response) (ResponseMetadata, []byte, 
 	return m.extractFn(resp)
 }
 
+type mockStreamingProvider struct {
+	*mockProvider
+	streamingExtractor *mockStreamingExtractor
+}
+
+func (m *mockStreamingProvider) ResponseExtractor() ResponseExtractor {
+	return m.streamingExtractor
+}
+
+type mockStreamingExtractor struct {
+	*mockExtractor
+	isStreaming        bool
+	extractStreamingFn func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error)
+}
+
+func (m *mockStreamingExtractor) IsStreamingResponse(resp *http.Response) bool {
+	return m.isStreaming
+}
+
+func (m *mockStreamingExtractor) ExtractStreamingWithController(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+	if m.extractStreamingFn != nil {
+		return m.extractStreamingFn(resp, w, rc)
+	}
+	return ResponseMetadata{}, nil
+}
+
 type mockDetector struct{ detectFn func(ProviderHint) string }
 
 func (m *mockDetector) Detect(hint ProviderHint) string { return m.detectFn(hint) }
@@ -388,5 +414,255 @@ func TestAutoRouter_PreservesModelWithoutPrefix(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAutoRouter_StreamingInjectsStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"id\":\"test\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				io.Copy(w, resp.Body)
+				rc.Flush()
+				return ResponseMetadata{ID: "test"}, nil
+			},
+		},
+	}
+	provider.mockProvider.extractFn = func(resp *http.Response) (ResponseMetadata, []byte, error) {
+		body, _ := io.ReadAll(resp.Body)
+		return ResponseMetadata{ID: "test"}, body, nil
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", w.Code)
+	}
+
+	streamOpts, ok := receivedBody["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatal("stream_options not injected")
+	}
+	if includeUsage, ok := streamOpts["include_usage"].(bool); !ok || !includeUsage {
+		t.Errorf("stream_options.include_usage = %v, want true", streamOpts["include_usage"])
+	}
+}
+
+func TestAutoRouter_StreamingOverridesStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"id\":\"test\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				io.Copy(w, resp.Body)
+				rc.Flush()
+				return ResponseMetadata{ID: "test"}, nil
+			},
+		},
+	}
+	provider.mockProvider.extractFn = func(resp *http.Response) (ResponseMetadata, []byte, error) {
+		body, _ := io.ReadAll(resp.Body)
+		return ResponseMetadata{ID: "test"}, body, nil
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", w.Code)
+	}
+
+	streamOpts, ok := receivedBody["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatal("stream_options not present")
+	}
+	if includeUsage, ok := streamOpts["include_usage"].(bool); !ok || !includeUsage {
+		t.Errorf("stream_options.include_usage = %v, want true (should override false)", streamOpts["include_usage"])
+	}
+}
+
+func TestAutoRouter_StreamingNoBillingNoStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"id\":\"test\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				io.Copy(w, resp.Body)
+				rc.Flush()
+				return ResponseMetadata{ID: "test"}, nil
+			},
+		},
+	}
+	provider.mockProvider.extractFn = func(resp *http.Response) (ResponseMetadata, []byte, error) {
+		body, _ := io.ReadAll(resp.Body)
+		return ResponseMetadata{ID: "test"}, body, nil
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", w.Code)
+	}
+
+	if _, ok := receivedBody["stream_options"]; ok {
+		t.Error("stream_options should not be injected when no billing calculator")
+	}
+}
+
+func TestAutoRouter_NonStreamingNoStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"test"}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "test",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-4"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "test"}, body, nil
+		},
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", w.Code)
+	}
+
+	if _, ok := receivedBody["stream_options"]; ok {
+		t.Error("stream_options should not be injected for non-streaming requests")
 	}
 }
