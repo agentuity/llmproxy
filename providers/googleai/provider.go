@@ -25,7 +25,7 @@ func New(apiKey string) (*Provider, error) {
 		BaseProvider: llmproxy.NewBaseProvider("googleai",
 			llmproxy.WithBodyParser(&Parser{}),
 			llmproxy.WithRequestEnricher(NewEnricher(apiKey)),
-			llmproxy.WithResponseExtractor(NewExtractor()),
+			llmproxy.WithResponseExtractor(NewStreamingExtractor()),
 			llmproxy.WithURLResolver(resolver),
 		),
 	}, nil

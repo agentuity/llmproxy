@@ -2,7 +2,9 @@ package openai_compatible
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -56,8 +58,6 @@ func (e *MultiAPIExtractor) Extract(resp *http.Response) (llmproxy.ResponseMetad
 	}
 	resp.Body.Close()
 
-	// Detect response type by inspecting response-specific fields
-	// Responses API has "output" and "status", Chat Completions has "choices"
 	var raw map[string]any
 	isResponsesAPI := false
 	if err := json.Unmarshal(body, &raw); err == nil {
@@ -68,11 +68,77 @@ func (e *MultiAPIExtractor) Extract(resp *http.Response) (llmproxy.ResponseMetad
 		}
 	}
 
-	// Restore body for downstream extractors
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	if isResponsesAPI {
 		return e.responsesExtractor.Extract(resp)
 	}
 	return e.chatCompletionsExtractor.Extract(resp)
+}
+
+type StreamingMultiAPIExtractor struct {
+	*MultiAPIExtractor
+	chatCompletionsStreaming *StreamingExtractor
+}
+
+func NewStreamingMultiAPIExtractor() *StreamingMultiAPIExtractor {
+	return &StreamingMultiAPIExtractor{
+		MultiAPIExtractor:        NewMultiAPIExtractor(),
+		chatCompletionsStreaming: NewStreamingExtractor(),
+	}
+}
+
+func (e *StreamingMultiAPIExtractor) IsStreamingResponse(resp *http.Response) bool {
+	return llmproxy.IsSSEStream(resp.Header.Get("Content-Type"))
+}
+
+func (e *StreamingMultiAPIExtractor) ExtractStreamingWithController(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (llmproxy.ResponseMetadata, error) {
+	if !e.IsStreamingResponse(resp) {
+		return e.extractNonStreamingWithController(resp, w, rc)
+	}
+	return e.chatCompletionsStreaming.ExtractStreamingWithController(resp, w, rc)
+}
+
+func (e *StreamingMultiAPIExtractor) extractNonStreamingWithController(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (llmproxy.ResponseMetadata, error) {
+	var buf bytes.Buffer
+	tee := io.TeeReader(resp.Body, &buf)
+
+	meta, _, err := e.MultiAPIExtractor.Extract(&http.Response{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header,
+		Body:       io.NopCloser(tee),
+	})
+	if err != nil {
+		return meta, err
+	}
+
+	readBuf := make([]byte, 1024*512)
+	for {
+		n, err := buf.Read(readBuf)
+		if err != nil {
+			if err == io.EOF {
+				if n > 0 {
+					if _, writeErr := w.Write(readBuf[:n]); writeErr != nil {
+						return meta, writeErr
+					}
+				}
+				break
+			}
+			if errors.Is(err, context.Canceled) {
+				break
+			}
+			return meta, err
+		}
+		if n == 0 {
+			break
+		}
+		if _, writeErr := w.Write(readBuf[:n]); writeErr != nil {
+			return meta, writeErr
+		}
+		if flushErr := rc.Flush(); flushErr != nil {
+			return meta, flushErr
+		}
+	}
+
+	return meta, nil
 }

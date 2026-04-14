@@ -208,7 +208,7 @@ func main() {
 		llmproxy.WithAutoRouterInterceptor(tracingInterceptor),
 		llmproxy.WithAutoRouterInterceptor(loggingInterceptor),
 		llmproxy.WithAutoRouterInterceptor(interceptors.NewMetrics(metrics)),
-		llmproxy.WithAutoRouterInterceptor(interceptors.NewResponseHeaderBan("Openai-Organization", "Openai-Project", "Set-Cookie")),
+		llmproxy.WithAutoRouterInterceptor(interceptors.NewResponseHeaderBan("Openai-Organization", "Openai-Project", "Anthropic-Organization-Id", "Set-Cookie")),
 		llmproxy.WithAutoRouterInterceptor(interceptors.NewAddRequestHeader(interceptors.NewHeader("User-Agent", "Agentuity AI Gateway/1.0"))),
 		llmproxy.WithAutoRouterInterceptor(interceptors.NewAddResponseHeader(interceptors.NewHeader("Server", "Agentuity AI Gateway/1.0"))),
 		llmproxy.WithAutoRouterFallbackProvider(providers[0]),
@@ -219,9 +219,11 @@ func main() {
 	}
 
 	if costLookup != nil {
-		opts = append(opts, llmproxy.WithAutoRouterInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
+		billingCallback := func(r llmproxy.BillingResult) {
 			logr.Info("Billing: provider=%s model=%s tokens=%d/%d cost=$%.6f", r.Provider, r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
-		})))
+		}
+		opts = append(opts, llmproxy.WithAutoRouterInterceptor(interceptors.NewBilling(costLookup, billingCallback)))
+		opts = append(opts, llmproxy.WithAutoRouterBillingCalculator(llmproxy.NewBillingCalculator(costLookup, billingCallback)))
 	}
 
 	router := llmproxy.NewAutoRouter(opts...)
@@ -268,6 +270,23 @@ func main() {
 	logr.Info("  curl -X POST http://localhost:8080/ \\")
 	logr.Info("    -H 'Content-Type: application/json' \\")
 	logr.Info("    -d '{\"model\":\"gpt-4o\",\"input\":\"Hello\"}'")
+	logr.Info("")
+	logr.Info("Streaming examples:")
+	logr.Info("  # Streaming Chat Completions with usage (OpenAI)")
+	logr.Info("  # Note: stream_options.include_usage is required to get token counts")
+	logr.Info("  curl -X POST http://localhost:8080/ \\")
+	logr.Info("    -H 'Content-Type: application/json' \\")
+	logr.Info("    -d '{\"model\":\"gpt-4\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"Tell me a short story\"}]}'")
+	logr.Info("")
+	logr.Info("  # Streaming Messages (Anthropic)")
+	logr.Info("  curl -X POST http://localhost:8080/ \\")
+	logr.Info("    -H 'Content-Type: application/json' \\")
+	logr.Info("    -d '{\"model\":\"claude-3-opus\",\"stream\":true,\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Tell me a joke\"}]}'")
+	logr.Info("")
+	logr.Info("  # Streaming with provider prefix")
+	logr.Info("  curl -X POST http://localhost:8080/ \\")
+	logr.Info("    -H 'Content-Type: application/json' \\")
+	logr.Info("    -d '{\"model\":\"openai/gpt-4\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("server error: %v", err)
