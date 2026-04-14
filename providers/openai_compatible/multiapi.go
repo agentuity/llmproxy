@@ -2,7 +2,6 @@ package openai_compatible
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 
@@ -31,32 +30,10 @@ func (p *MultiAPIParser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byt
 	apiType := llmproxy.DetectAPIType(data)
 	switch apiType {
 	case llmproxy.APITypeResponses:
-		return p.responsesParser.Parse(io.NopCloser(NewBytesReader(data)))
+		return p.responsesParser.Parse(io.NopCloser(bytes.NewReader(data)))
 	default:
-		return p.chatCompletionsParser.Parse(io.NopCloser(NewBytesReader(data)))
+		return p.chatCompletionsParser.Parse(io.NopCloser(bytes.NewReader(data)))
 	}
-}
-
-type byteReader struct {
-	data []byte
-	pos  int
-}
-
-func NewBytesReader(data []byte) *byteReader {
-	return &byteReader{data: data}
-}
-
-func (r *byteReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}
-
-func (r *byteReader) Close() error {
-	return nil
 }
 
 type MultiAPIExtractor struct {
@@ -77,16 +54,14 @@ func (e *MultiAPIExtractor) Extract(resp *http.Response) (llmproxy.ResponseMetad
 		return llmproxy.ResponseMetadata{}, nil, err
 	}
 
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err == nil {
-		if _, hasOutput := raw["output"]; hasOutput {
-			if _, hasChoices := raw["choices"]; !hasChoices {
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-				return e.responsesExtractor.Extract(resp)
-			}
-		}
+	// Use same detection logic as parser for consistency
+	apiType := llmproxy.DetectAPIType(body)
+	switch apiType {
+	case llmproxy.APITypeResponses:
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return e.responsesExtractor.Extract(resp)
+	default:
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return e.chatCompletionsExtractor.Extract(resp)
 	}
-
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return e.chatCompletionsExtractor.Extract(resp)
 }

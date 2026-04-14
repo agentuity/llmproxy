@@ -281,18 +281,18 @@ func TestDetectProvider(t *testing.T) {
 		{"chatgpt-4o", "openai"},
 		{"claude-3-opus", "anthropic"},
 		{"claude-3-sonnet", "anthropic"},
-		{"gemini-pro", "google"},
-		{"gemini-1.5-flash", "google"},
-		{"llama-3-70b", "groq"},
-		{"mixtral-8x7b", "groq"},
+		{"gemini-pro", "googleai"},
+		{"gemini-1.5-flash", "googleai"},
+		{"llama-3-70b", "openai_compatible"},
+		{"mixtral-8x7b", "openai_compatible"},
 		{"unknown-model", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := detectProvider(tt.model)
+			got := llmproxy.DetectProviderFromModel(tt.model)
 			if got != tt.expected {
-				t.Errorf("detectProvider(%q) = %q, want %q", tt.model, got, tt.expected)
+				t.Errorf("DetectProviderFromModel(%q) = %q, want %q", tt.model, got, tt.expected)
 			}
 		})
 	}

@@ -186,6 +186,25 @@ func (a *Adapter) Lookup(provider string, model string) (llmproxy.CostInfo, bool
 	return llmproxy.CostInfo{}, false
 }
 
+// FindProviderForModel searches all providers to find which one has the given model.
+// Returns the provider ID if found, or empty string if not found.
+// This is useful for provider detection when the model name is known but provider is not.
+func (a *Adapter) FindProviderForModel(model string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.data == nil {
+		return ""
+	}
+
+	for providerID, provider := range a.data {
+		if _, exists := provider.Models[model]; exists {
+			return providerID
+		}
+	}
+	return ""
+}
+
 // GetCostLookup returns a CostLookup function for use with interceptors.
 //
 // Example:

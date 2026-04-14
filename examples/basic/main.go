@@ -153,31 +153,37 @@ func main() {
 	}
 
 	var costLookup llmproxy.CostLookup
+	var modelProviderLookup llmproxy.ModelProviderLookup
 	modelsFile := os.Getenv("MODELS_DEV_JSON")
 	modelsURL := os.Getenv("MODELS_DEV_URL")
+	var adapter *modelsdev.Adapter
+	var err error
 
 	if modelsFile != "" {
-		adapter, err := modelsdev.LoadFromFile(modelsFile)
+		adapter, err = modelsdev.LoadFromFile(modelsFile)
 		if err != nil {
 			log.Printf("Warning: could not load models.dev from file: %v", err)
 		} else {
 			costLookup = adapter.GetCostLookup()
+			modelProviderLookup = adapter.FindProviderForModel
 			logr.Info("Billing enabled from file: %s", modelsFile)
 		}
 	} else if modelsURL != "" {
-		adapter := modelsdev.New(modelsdev.WithURL(modelsURL))
+		adapter = modelsdev.New(modelsdev.WithURL(modelsURL))
 		if err := adapter.Load(nil); err != nil {
 			log.Printf("Warning: could not load models.dev from URL: %v", err)
 		} else {
 			costLookup = adapter.GetCostLookup()
+			modelProviderLookup = adapter.FindProviderForModel
 			logr.Info("Billing enabled from URL: %s", modelsURL)
 		}
 	} else {
-		adapter, err := modelsdev.LoadFromURL()
+		adapter, err = modelsdev.LoadFromURL()
 		if err != nil {
 			log.Printf("Warning: could not fetch models.dev: %v (billing disabled)", err)
 		} else {
 			costLookup = adapter.GetCostLookup()
+			modelProviderLookup = adapter.FindProviderForModel
 			logr.Info("Billing enabled from https://models.dev/api.json")
 		}
 	}
@@ -208,6 +214,10 @@ func main() {
 		llmproxy.WithAutoRouterFallbackProvider(providers[0]),
 	}
 
+	if modelProviderLookup != nil {
+		opts = append(opts, llmproxy.WithAutoRouterModelProviderLookup(modelProviderLookup))
+	}
+
 	if costLookup != nil {
 		opts = append(opts, llmproxy.WithAutoRouterInterceptor(interceptors.NewBilling(costLookup, func(r llmproxy.BillingResult) {
 			logr.Info("Billing: provider=%s model=%s tokens=%d/%d cost=$%.6f", r.Provider, r.Model, r.PromptTokens, r.CompletionTokens, r.TotalCost)
@@ -225,10 +235,16 @@ func main() {
 	logr.Info("Proxy listening on :8080")
 	logr.Info("")
 	logr.Info("Auto-routing enabled - POST to any endpoint or just '/'")
-	logr.Info("Provider and API type detected from:")
+	logr.Info("Provider detected from:")
 	logr.Info("  1. X-Provider header (explicit override)")
 	logr.Info("  2. Model name pattern (gpt-* -> OpenAI, claude-* -> Anthropic, etc.)")
-	logr.Info("  3. Request body shape (input -> Responses, messages -> Chat/Messages)")
+	if modelProviderLookup != nil {
+		logr.Info("  3. models.dev registry (fallback for unknown models)")
+	}
+	logr.Info("")
+	logr.Info("API type detected from:")
+	logr.Info("  1. Request path (/v1/messages, /v1/responses, etc.)")
+	logr.Info("  2. Request body shape (input -> Responses, messages -> Chat/Messages)")
 	logr.Info("")
 	logr.Info("Supported endpoints (all optional - POST to / works too):")
 	logr.Info("  POST /                      (auto-detect from body)")

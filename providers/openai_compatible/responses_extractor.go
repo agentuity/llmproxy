@@ -60,16 +60,28 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 }
 
 func extractResponsesContent(output []ResponsesOutputItem) string {
+	var texts []string
 	for _, item := range output {
-		if item.Type == "message" && len(item.Content) > 0 {
+		if item.Type == "message" {
 			for _, c := range item.Content {
-				if c.Type == "output_text" {
-					return c.Text
+				if c.Type == "output_text" && c.Text != "" {
+					texts = append(texts, c.Text)
 				}
 			}
 		}
 	}
-	return ""
+	if len(texts) == 0 {
+		return ""
+	}
+	if len(texts) == 1 {
+		return texts[0]
+	}
+	// Join multiple text segments with newline
+	result := texts[0]
+	for _, t := range texts[1:] {
+		result += "\n" + t
+	}
+	return result
 }
 
 type ResponsesResponse struct {

@@ -37,14 +37,12 @@ func (p *ResponsesParser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []by
 			msgs := make([]llmproxy.Message, 0, len(v))
 			for _, item := range v {
 				if m, ok := item.(map[string]interface{}); ok {
-					msg := llmproxy.Message{}
-					if role, ok := m["role"].(string); ok {
-						msg.Role = role
+					role, hasRole := m["role"].(string)
+					content, hasContent := m["content"].(string)
+					// Only append if both role and content are present and non-empty
+					if hasRole && hasContent && role != "" && content != "" {
+						msgs = append(msgs, llmproxy.Message{Role: role, Content: content})
 					}
-					if content, ok := m["content"].(string); ok {
-						msg.Content = content
-					}
-					msgs = append(msgs, msg)
 				}
 			}
 			meta.Messages = msgs

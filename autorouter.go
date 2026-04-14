@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type AutoRouter struct {
-	registry         Registry
-	detector         ProviderDetector
-	interceptors     InterceptorChain
-	client           *http.Client
-	fallbackProvider Provider
+	registry            Registry
+	detector            ProviderDetector
+	modelProviderLookup ModelProviderLookup
+	interceptors        InterceptorChain
+	client              *http.Client
+	fallbackProvider    Provider
 }
 
 type AutoRouterOption func(*AutoRouter)
@@ -37,6 +39,10 @@ func WithAutoRouterHTTPClient(c *http.Client) AutoRouterOption {
 
 func WithAutoRouterFallbackProvider(p Provider) AutoRouterOption {
 	return func(a *AutoRouter) { a.fallbackProvider = p }
+}
+
+func WithAutoRouterModelProviderLookup(lookup ModelProviderLookup) AutoRouterOption {
+	return func(a *AutoRouter) { a.modelProviderLookup = lookup }
 }
 
 func NewAutoRouter(opts ...AutoRouterOption) *AutoRouter {
@@ -81,6 +87,11 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	}
 	providerName := a.detector.Detect(hint)
 
+	// If no provider detected and we have a model provider lookup, try that
+	if providerName == "" && a.modelProviderLookup != nil && model != "" {
+		providerName = a.modelProviderLookup(model)
+	}
+
 	var provider Provider
 	if providerName != "" {
 		provider, _ = a.registry.Get(providerName)
@@ -97,7 +108,11 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
 			raw["model"] = strippedModel
 			model = strippedModel
-			body, _ = json.Marshal(raw)
+			var err error
+			body, err = json.Marshal(raw)
+			if err != nil {
+				return nil, ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
+			}
 		}
 	}
 
@@ -178,6 +193,12 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
@@ -189,13 +210,9 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if _, err := w.Write(body); err != nil {
+		// Headers already sent, can't report error to client
 	}
-	w.Write(body)
 }
 
 var ErrNoProvider = &ProviderError{Message: "no provider available for request"}
@@ -221,7 +238,7 @@ var knownProviderPrefixes = map[string]bool{
 }
 
 func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
-	idx := indexOfSlash(model)
+	idx := strings.Index(model, "/")
 	if idx < 0 {
 		return model, false
 	}
@@ -230,13 +247,4 @@ func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
 		return model[idx+1:], true
 	}
 	return model, false
-}
-
-func indexOfSlash(s string) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
 }

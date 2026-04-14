@@ -23,26 +23,36 @@ func (f ProviderDetectorFunc) Detect(hint ProviderHint) string {
 	return f(hint)
 }
 
+// ModelProviderLookup is a function that finds the provider for a given model name.
+// This can be backed by models.dev or another model registry.
+type ModelProviderLookup func(model string) string
+
 // DefaultProviderDetector detects the provider from model name patterns and headers.
+// Precedence: X-Provider header > model pattern > other header heuristics
 var DefaultProviderDetector = ProviderDetectorFunc(func(hint ProviderHint) string {
+	// X-Provider header is always an explicit override
 	if hint.Headers != nil {
-		if provider := detectProviderFromHeaders(hint.Headers); provider != "" {
+		if provider := hint.Headers.Get("X-Provider"); provider != "" {
 			return provider
 		}
 	}
 
+	// Model-based detection takes precedence over header heuristics
 	if hint.Model != "" {
-		return DetectProviderFromModel(hint.Model)
+		if provider := DetectProviderFromModel(hint.Model); provider != "" {
+			return provider
+		}
+	}
+
+	// Header heuristics as fallback
+	if hint.Headers != nil {
+		return detectProviderFromHeaderHeuristics(hint.Headers)
 	}
 
 	return ""
 })
 
-func detectProviderFromHeaders(headers http.Header) string {
-	if headers.Get("X-Provider") != "" {
-		return headers.Get("X-Provider")
-	}
-
+func detectProviderFromHeaderHeuristics(headers http.Header) string {
 	if headers.Get("anthropic-version") != "" || strings.HasPrefix(headers.Get("X-API-Key"), "sk-ant-") {
 		return "anthropic"
 	}
@@ -53,7 +63,7 @@ func detectProviderFromHeaders(headers http.Header) string {
 		}
 	}
 
-	if strings.HasPrefix(headers.Get("api-key"), "") && headers.Get("api-key") != "" {
+	if headers.Get("api-key") != "" {
 		return "azure"
 	}
 
