@@ -240,7 +240,9 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		}
 		if a.billingCalculator != nil {
 			if stream, ok := raw["stream"].(bool); ok && stream {
-				raw["stream_options"] = map[string]any{"include_usage": true}
+				if !nativeStreamUsageProviders[providerName] {
+					raw["stream_options"] = map[string]any{"include_usage": true}
+				}
 			}
 		}
 		var err error
@@ -470,6 +472,14 @@ type ProviderError struct {
 
 func (e *ProviderError) Error() string {
 	return e.Message
+}
+
+// nativeStreamUsageProviders are providers that include usage data
+// natively in their streaming events without needing stream_options.
+var nativeStreamUsageProviders = map[string]bool{
+	"anthropic": true,
+	"bedrock":   true,
+	"googleai":  true,
 }
 
 var knownProviderPrefixes = map[string]bool{

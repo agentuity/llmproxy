@@ -666,3 +666,68 @@ func TestAutoRouter_NonStreamingNoStreamOptions(t *testing.T) {
 		t.Error("stream_options should not be injected for non-streaming requests")
 	}
 }
+
+func TestAutoRouter_AnthropicStreamingNoStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"test\",\"usage\":{\"input_tokens\":100}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":50}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "anthropic",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "claude-3-opus", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				io.Copy(w, resp.Body)
+				rc.Flush()
+				return ResponseMetadata{ID: "test", Usage: Usage{PromptTokens: 100, CompletionTokens: 50}}, nil
+			},
+		},
+	}
+	provider.mockProvider.extractFn = func(resp *http.Response) (ResponseMetadata, []byte, error) {
+		body, _ := io.ReadAll(resp.Body)
+		return ResponseMetadata{ID: "test"}, body, nil
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 3, Output: 15}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "anthropic" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"claude-3-opus","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", w.Code)
+	}
+
+	if _, ok := receivedBody["stream_options"]; ok {
+		t.Error("stream_options should NOT be injected for Anthropic (always sends usage in events)")
+	}
+}

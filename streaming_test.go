@@ -284,3 +284,252 @@ func TestFormatSSEEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestParseAnthropicSSEEvent(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             []byte
+		expectError       bool
+		eventType         string
+		expectedInputTok  int
+		expectedOutputTok int
+	}{
+		{
+			name:        "empty input",
+			input:       []byte{},
+			expectError: false,
+		},
+		{
+			name:        "invalid JSON",
+			input:       []byte(`{invalid}`),
+			expectError: true,
+		},
+		{
+			name:              "message_start event",
+			input:             []byte(`{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-opus-20240229","usage":{"input_tokens":150,"cache_read_input_tokens":1000}}}`),
+			eventType:         "message_start",
+			expectedInputTok:  150,
+			expectedOutputTok: 0,
+		},
+		{
+			name:              "message_delta event",
+			input:             []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":75}}`),
+			eventType:         "message_delta",
+			expectedInputTok:  0,
+			expectedOutputTok: 75,
+		},
+		{
+			name:      "content_block_start event",
+			input:     []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+			eventType: "content_block_start",
+		},
+		{
+			name:      "content_block_delta event",
+			input:     []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`),
+			eventType: "content_block_delta",
+		},
+		{
+			name:      "message_stop event",
+			input:     []byte(`{"type":"message_stop"}`),
+			eventType: "message_stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event, err := ParseAnthropicSSEEvent(tt.input)
+
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if len(tt.input) == 0 {
+				if event != nil {
+					t.Error("expected nil event for empty input")
+				}
+				return
+			}
+
+			if event.Type != tt.eventType {
+				t.Errorf("expected type %q, got %q", tt.eventType, event.Type)
+			}
+
+			if tt.eventType == "message_start" && event.Message != nil {
+				if event.Message.Usage == nil {
+					t.Error("expected usage in message_start")
+				} else {
+					if event.Message.Usage.InputTokens != tt.expectedInputTok {
+						t.Errorf("expected input tokens %d, got %d", tt.expectedInputTok, event.Message.Usage.InputTokens)
+					}
+				}
+			}
+
+			if tt.eventType == "message_delta" && event.Usage != nil {
+				if event.Usage.OutputTokens != tt.expectedOutputTok {
+					t.Errorf("expected output tokens %d, got %d", tt.expectedOutputTok, event.Usage.OutputTokens)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractUsageFromAnthropicEvent(t *testing.T) {
+	tests := []struct {
+		name                string
+		event               *AnthropicStreamEvent
+		expectedPrompt      int
+		expectedCompletion  int
+		expectedCacheRead   int
+		expectedCacheCreate int
+	}{
+		{
+			name:  "nil event",
+			event: nil,
+		},
+		{
+			name:  "message_stop returns nil",
+			event: &AnthropicStreamEvent{Type: "message_stop"},
+		},
+		{
+			name: "message_start with usage",
+			event: &AnthropicStreamEvent{
+				Type: "message_start",
+				Message: &AnthropicStreamMessage{
+					Usage: &AnthropicStreamUsage{
+						InputTokens:          100,
+						CacheReadInputTokens: 500,
+					},
+				},
+			},
+			expectedPrompt:    100,
+			expectedCacheRead: 500,
+		},
+		{
+			name: "message_delta with usage",
+			event: &AnthropicStreamEvent{
+				Type: "message_delta",
+				Usage: &AnthropicStreamUsage{
+					OutputTokens:             50,
+					CacheCreationInputTokens: 200,
+				},
+			},
+			expectedCompletion:  50,
+			expectedCacheCreate: 200,
+		},
+		{
+			name: "content_block_delta returns nil",
+			event: &AnthropicStreamEvent{
+				Type: "content_block_delta",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExtractUsageFromAnthropicEvent(tt.event)
+
+			if tt.expectedPrompt == 0 && tt.expectedCompletion == 0 {
+				if result != nil && (result.PromptTokens != 0 || result.CompletionTokens != 0) {
+					t.Errorf("expected nil or zero usage, got %+v", result)
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatal("expected result, got nil")
+			}
+
+			if result.PromptTokens != tt.expectedPrompt {
+				t.Errorf("expected prompt tokens %d, got %d", tt.expectedPrompt, result.PromptTokens)
+			}
+			if result.CompletionTokens != tt.expectedCompletion {
+				t.Errorf("expected completion tokens %d, got %d", tt.expectedCompletion, result.CompletionTokens)
+			}
+
+			if tt.expectedCacheRead > 0 || tt.expectedCacheCreate > 0 {
+				if result.CacheUsage == nil {
+					t.Fatal("expected cache usage")
+				}
+				if result.CacheUsage.CacheReadInputTokens != tt.expectedCacheRead {
+					t.Errorf("expected cache read %d, got %d", tt.expectedCacheRead, result.CacheUsage.CacheReadInputTokens)
+				}
+				if result.CacheUsage.CacheCreationInputTokens != tt.expectedCacheCreate {
+					t.Errorf("expected cache create %d, got %d", tt.expectedCacheCreate, result.CacheUsage.CacheCreationInputTokens)
+				}
+			}
+		})
+	}
+}
+
+func TestAnthropicSSEParser(t *testing.T) {
+	// Realistic Anthropic streaming format
+	input := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1a2b3c","type":"message","role":"assistant","model":"claude-3-opus-20240229","content":[],"stop_reason":null,"usage":{"input_tokens":150,"cache_read_input_tokens":1000}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":25}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	parser := NewSSEParser(bytes.NewReader([]byte(input)))
+
+	var events []*SSEEvent
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		events = append(events, event)
+	}
+
+	if len(events) != 7 {
+		t.Fatalf("expected 7 events, got %d", len(events))
+	}
+
+	// Verify message_start
+	if string(events[0].Event) != "message_start" {
+		t.Errorf("expected event 'message_start', got %q", events[0].Event)
+	}
+	startEvent, _ := ParseAnthropicSSEEvent(events[0].Data)
+	if startEvent.Message.Usage.InputTokens != 150 {
+		t.Errorf("expected 150 input tokens, got %d", startEvent.Message.Usage.InputTokens)
+	}
+	if startEvent.Message.Usage.CacheReadInputTokens != 1000 {
+		t.Errorf("expected 1000 cache read tokens, got %d", startEvent.Message.Usage.CacheReadInputTokens)
+	}
+
+	// Verify message_delta
+	if string(events[5].Event) != "message_delta" {
+		t.Errorf("expected event 'message_delta', got %q", events[5].Event)
+	}
+	deltaEvent, _ := ParseAnthropicSSEEvent(events[5].Data)
+	if deltaEvent.Usage.OutputTokens != 25 {
+		t.Errorf("expected 25 output tokens, got %d", deltaEvent.Usage.OutputTokens)
+	}
+}
