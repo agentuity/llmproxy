@@ -10,6 +10,8 @@ go get github.com/agentuity/llmproxy
 
 ## Quick Start
 
+### Simple Proxy
+
 ```go
 package main
 
@@ -51,26 +53,118 @@ func main() {
 }
 ```
 
+### AutoRouter (Recommended)
+
+Single endpoint that auto-detects provider and API type:
+
+```go
+package main
+
+import (
+    "net/http"
+
+    "github.com/agentuity/llmproxy"
+    "github.com/agentuity/llmproxy/providers/openai"
+    "github.com/agentuity/llmproxy/providers/anthropic"
+)
+
+func main() {
+    openaiProvider, _ := openai.New("sk-openai-key")
+    anthropicProvider, _ := anthropic.New("sk-ant-key")
+
+    router := llmproxy.NewAutoRouter(
+        llmproxy.WithAutoRouterFallbackProvider(openaiProvider),
+    )
+    router.RegisterProvider(openaiProvider)
+    router.RegisterProvider(anthropicProvider)
+
+    // Single endpoint handles all providers and APIs
+    http.Handle("/", router)
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+POST to `/` with any model - provider and API are auto-detected:
+
+```bash
+# Auto-detect OpenAI from gpt-4 model name
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# Auto-detect Anthropic from claude model name  
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-3-opus","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+# Auto-detect Responses API from input field
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4o","input":"Hello"}'
+```
+
 ## Features
 
 - **9 Provider Implementations**: OpenAI, Anthropic, Groq, Fireworks, x.AI, Google AI, AWS Bedrock, Azure OpenAI, OpenAI-compatible base
+- **AutoRouter**: Single endpoint with automatic provider/API detection
+- **Responses API**: Full support for OpenAI's new Responses API
 - **8 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader, PromptCaching
 - **Pricing Integration**: models.dev adapter with markup support
 - **Prompt Caching**: prompt caching support for Anthropic, OpenAI, xAI, Fireworks, and Bedrock
 - **Raw Body Preservation**: Custom JSON fields pass through unchanged
 
+## AutoRouter
+
+The `AutoRouter` provides automatic routing from a single endpoint:
+
+### Detection Order
+
+1. **Path-based** - `/v1/messages` → Messages API, `/v1/responses` → Responses API
+2. **Body + Provider** - When path is `/` or unknown:
+   - `input` field → Responses API
+   - `prompt` field → Completions API  
+   - `contents` field → GenerateContent API
+   - `messages` + Anthropic → Messages API
+   - `messages` + other → Chat Completions
+
+### Provider Detection
+
+1. **X-Provider header** - Explicit override
+2. **Model prefix** - `openai/gpt-4` → OpenAI (strips prefix before forwarding)
+3. **Model pattern** - `gpt-*` → OpenAI, `claude-*` → Anthropic, etc.
+
+### Examples
+
+```bash
+# Explicit provider via header
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -H 'X-Provider: anthropic' \
+  -d '{"model":"claude-3-opus","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+# Provider prefix in model (gets stripped)
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"anthropic/claude-3-opus","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+# Traditional path still works
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+```
+
 ## Providers
 
-| Provider     | Auth                  | API Format                     |
-| ------------ | --------------------- | ------------------------------ |
-| OpenAI       | Bearer token          | Chat completions               |
-| Anthropic    | `x-api-key`           | Messages API                   |
-| Groq         | Bearer token          | OpenAI-compatible              |
-| Fireworks    | Bearer token          | OpenAI-compatible              |
-| x.AI         | Bearer token          | OpenAI-compatible              |
-| Google AI    | API key query param   | Gemini generateContent         |
-| AWS Bedrock  | AWS Signature V4      | Converse API                   |
-| Azure OpenAI | `api-key` or Azure AD | Chat completions (deployments) |
+| Provider     | Auth                  | API Format                     | Notes |
+| ------------ | --------------------- | ------------------------------ | ----- |
+| OpenAI       | Bearer token          | Chat completions, Responses    | Supports both `/v1/chat/completions` and `/v1/responses` |
+| Anthropic    | `x-api-key`           | Messages API                   | |
+| Groq         | Bearer token          | OpenAI-compatible              | |
+| Fireworks    | Bearer token          | OpenAI-compatible              | |
+| x.AI         | Bearer token          | OpenAI-compatible              | |
+| Google AI    | API key query param   | Gemini generateContent         | |
+| AWS Bedrock  | AWS Signature V4      | Converse API                   | |
+| Azure OpenAI | `api-key` or Azure AD | Chat completions (deployments) | |
 
 ## Interceptors
 

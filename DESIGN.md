@@ -79,6 +79,44 @@ The main entry point. `Forward(ctx, req)` orchestrates the full request lifecycl
 - `WithInterceptor(i)` — adds an interceptor to the chain
 - `WithHTTPClient(c)` — sets a custom `*http.Client` for upstream calls
 
+#### AutoRouter
+
+An HTTP handler that provides automatic provider and API type detection from a single endpoint. Implements `http.Handler` for easy integration.
+
+```
+Forward(ctx, req) -> (resp, meta, err)
+ServeHTTP(w, r)
+```
+
+**Detection Flow:**
+
+1. **Parse body** - Extract model name and request structure
+2. **Detect provider** - From `X-Provider` header, model prefix (`openai/gpt-4`), or model pattern (`gpt-*`)
+3. **Strip provider prefix** - If model has known provider prefix, strip before forwarding
+4. **Detect API type** - From path (`/v1/messages`) or body+provider (`input` → Responses)
+5. **Route to provider** - Forward to detected provider with correct endpoint
+
+**Configuration options:**
+
+- `WithAutoRouterRegistry(r)` — Use custom registry
+- `WithAutoRouterDetector(d)` — Custom provider detection logic
+- `WithAutoRouterInterceptor(i)` — Add interceptor to chain
+- `WithAutoRouterHTTPClient(c)` — Custom HTTP client
+- `WithAutoRouterFallbackProvider(p)` — Provider when detection fails
+
+**Example:**
+
+```go
+router := llmproxy.NewAutoRouter(
+    llmproxy.WithAutoRouterFallbackProvider(openaiProvider),
+    llmproxy.WithAutoRouterInterceptor(interceptors.NewLogging(logger)),
+)
+router.RegisterProvider(openaiProvider)
+router.RegisterProvider(anthropicProvider)
+
+http.Handle("/", router)
+```
+
 ---
 
 ## Data Types
@@ -246,6 +284,105 @@ Steps in detail:
 
 ---
 
+## Auto-Routing
+
+The `AutoRouter` enables automatic provider and API detection from a single endpoint. POST to `/` with any LLM request and routing happens automatically.
+
+### API Type Detection
+
+Detection happens in two phases:
+
+**Phase 1: Path-based detection**
+
+| Path | API Type |
+|------|----------|
+| `/v1/chat/completions` | Chat Completions |
+| `/v1/responses` | Responses |
+| `/v1/completions` | Legacy Completions |
+| `/v1/messages` | Anthropic Messages |
+| `:generateContent` | Gemini GenerateContent |
+| `/converse` | Bedrock Converse |
+
+**Phase 2: Body + Provider detection** (when path is `/` or unknown)
+
+| Body Field | Provider | API Type |
+|------------|----------|----------|
+| `input` | any | Responses |
+| `prompt` | any | Completions |
+| `contents` | any | GenerateContent |
+| `messages` | anthropic | Messages |
+| `messages` | other | Chat Completions |
+
+### Provider Detection
+
+Provider is detected in priority order:
+
+1. **X-Provider header** — Explicit override
+   ```bash
+   curl -X POST http://localhost:8080/ \
+     -H 'X-Provider: anthropic' \
+     -d '{"model":"claude-3-opus",...}'
+   ```
+
+2. **Model prefix** — Provider prefix in model name (stripped before forwarding)
+   ```bash
+   # Model "openai/gpt-4" routes to OpenAI, forwards "gpt-4"
+   curl -X POST http://localhost:8080/ \
+     -d '{"model":"anthropic/claude-3-opus",...}'
+   ```
+
+3. **Model pattern** — Match against known patterns
+   | Pattern | Provider |
+   |---------|----------|
+   | `gpt-*`, `o1-*`, `o3-*`, `chatgpt-*` | OpenAI |
+   | `claude-*` | Anthropic |
+   | `gemini-*`, `gemma-*` | Google AI |
+   | `grok-*` | x.AI |
+   | `accounts/fireworks/*` | Fireworks |
+   | `sonar*` | Perplexity |
+   | `anthropic.claude-*`, `amazon.*` | Bedrock |
+
+### Provider Prefix Stripping
+
+Only known provider prefixes are stripped:
+
+```go
+// Stripped (known providers)
+"openai/gpt-4"           -> "gpt-4"
+"anthropic/claude-3"     -> "claude-3"
+"fireworks/models/llama" -> "models/llama"
+
+// Preserved (unknown or model-native paths)
+"accounts/fireworks/models/llama" -> "accounts/fireworks/models/llama"
+"some-unknown/model"              -> "some-unknown/model"
+```
+
+### Usage Examples
+
+```bash
+# Auto-detect everything - POST to /
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# Auto-detect Anthropic from model name
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-3-opus","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+# Auto-detect Responses API from input field
+curl -X POST http://localhost:8080/ \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4o","input":"Hello"}'
+
+# Traditional path-based routing still works
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
 ## Providers
 
 Nine providers are included. Six share the OpenAI-compatible base; three have fully custom implementations.
@@ -254,11 +391,13 @@ Nine providers are included. Six share the OpenAI-compatible base; three have fu
 
 `providers/openai_compatible` implements `BodyParser`, `ResponseExtractor`, `URLResolver`, and `RequestEnricher` for the OpenAI chat completions format. Providers that speak this protocol embed the base and override only what differs (name, base URL, auth configuration).
 
+The OpenAI provider also supports the **Responses API** (`/v1/responses`) with automatic detection based on the `input` field in the request body.
+
 ### Provider Table
 
 | Provider | Package | Auth | API Format | Notes |
 |----------|---------|------|------------|-------|
-| OpenAI | `providers/openai` | Bearer token | OpenAI chat completions | Wraps `openai_compatible` |
+| OpenAI | `providers/openai` | Bearer token | Chat completions, Responses | Supports both APIs with auto-detection |
 | Anthropic | `providers/anthropic` | `x-api-key` header + `anthropic-version` | Anthropic Messages API | Custom parser/extractor |
 | Groq | `providers/groq` | Bearer token | OpenAI-compatible | Wraps `openai_compatible` |
 | Fireworks | `providers/fireworks` | Bearer token | OpenAI-compatible | Wraps `openai_compatible` |
@@ -270,7 +409,15 @@ Nine providers are included. Six share the OpenAI-compatible base; three have fu
 
 ### Provider Details
 
-**OpenAI** — Thin wrapper over `openai_compatible`. Sets the base URL to `https://api.openai.com` and the provider name to `openai`.
+**OpenAI** — Wraps `openai_compatible` with support for multiple APIs:
+- **Chat Completions** (`/v1/chat/completions`) — Standard messages-based API
+- **Responses** (`/v1/responses`) — Newer API with `input` field, built-in tools support
+- **Legacy Completions** (`/v1/completions`) — Older prompt-based API
+
+The provider auto-detects the API type from the request body:
+- `input` field → Responses API
+- `prompt` field → Completions API
+- `messages` field → Chat Completions API
 
 **Anthropic** — Custom body parser translates between the proxy's canonical format and Anthropic's Messages API. Custom extractor maps Anthropic's response shape (content blocks, stop_reason) back to `ResponseMetadata`. Auth uses the `x-api-key` header alongside an `anthropic-version` header.
 
@@ -357,6 +504,12 @@ retry := interceptors.NewRetryWithRateLimitHeaders(3, time.Second)
 - Detects the provider from the model name
 - Computes input/output/cache costs based on token usage
 - Calls the `onResult` callback with a `BillingResult` after each request
+- Stores `BillingResult` in `ResponseMetadata.Custom["billing_result"]` for downstream access
+
+When using `AutoRouter`, billing results are automatically added as response headers:
+- `X-Gateway-Cost` — Total cost in USD
+- `X-Gateway-Prompt-Tokens` — Input token count
+- `X-Gateway-Completion-Tokens` — Output token count
 
 ### Tracing
 
@@ -719,7 +872,10 @@ Matches the signature of `github.com/agentuity/go-common/logger` without requiri
 
 ```
 llmproxy/
+├── apitype.go              # API type detection and constants
+├── autorouter.go           # AutoRouter, provider/API auto-detection
 ├── billing.go              # CostInfo, CostLookup, BillingResult, CalculateCost
+├── detection.go            # Provider detection from model/header
 ├── enricher.go             # RequestEnricher interface
 ├── extractor.go            # ResponseExtractor interface
 ├── interceptor.go          # Interceptor, InterceptorChain, RoundTripFunc
@@ -749,9 +905,12 @@ llmproxy/
 │   ├── fireworks/          # Fireworks (OpenAI-compatible)
 │   ├── googleai/           # Google AI Gemini
 │   ├── groq/               # Groq (OpenAI-compatible)
-│   ├── openai/             # OpenAI
+│   ├── openai/             # OpenAI (Chat Completions + Responses)
 │   ├── openai_compatible/  # Base for OpenAI-compatible providers
+│   │   ├── multiapi.go           # Multi-API parser/extractor
+│   │   ├── responses_parser.go   # Responses API parser
+│   │   └── responses_extractor.go # Responses API extractor
 │   └── xai/                # x.AI (OpenAI-compatible)
 └── examples/
-    └── basic/              # Multi-provider proxy server example
+    └── basic/              # Multi-provider proxy server example (uses AutoRouter)
 ```
