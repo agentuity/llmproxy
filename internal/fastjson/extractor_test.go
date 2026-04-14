@@ -59,6 +59,10 @@ func TestUsageExtractor_ExtractOpenAI(t *testing.T) {
 				} else if cacheUsage.CachedTokens != tt.expectedCached {
 					t.Errorf("expected cached tokens %d, got %d", tt.expectedCached, cacheUsage.CachedTokens)
 				}
+			} else {
+				if cacheUsage != nil {
+					t.Errorf("expected nil cache usage, got %+v", cacheUsage)
+				}
 			}
 		})
 	}

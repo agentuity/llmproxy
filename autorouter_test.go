@@ -76,9 +76,13 @@ func (m *mockStreamingProvider) ResponseExtractor() ResponseExtractor {
 }
 
 type mockStreamingExtractor struct {
-	*mockExtractor
 	isStreaming        bool
 	extractStreamingFn func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error)
+}
+
+func (m *mockStreamingExtractor) Extract(resp *http.Response) (ResponseMetadata, []byte, error) {
+	body, _ := io.ReadAll(resp.Body)
+	return ResponseMetadata{}, body, nil
 }
 
 func (m *mockStreamingExtractor) IsStreamingResponse(resp *http.Response) bool {

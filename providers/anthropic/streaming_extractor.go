@@ -104,6 +104,15 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 			data := bytes.TrimPrefix(line, []byte("data: "))
 			data = bytes.TrimSpace(data)
 
+			// Forward the raw data regardless of parsing success
+			if _, err := w.Write(line); err != nil {
+				return meta, err
+			}
+			if _, err := w.Write([]byte("\n\n")); err != nil {
+				return meta, err
+			}
+			_ = rc.Flush()
+
 			event, err := llmproxy.ParseAnthropicSSEEvent(data)
 			if err != nil {
 				continue
@@ -170,14 +179,6 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 				}
 			case "message_stop":
 			}
-
-			if _, err := w.Write(line); err != nil {
-				return meta, err
-			}
-			if _, err := w.Write([]byte("\n\n")); err != nil {
-				return meta, err
-			}
-			_ = rc.Flush()
 		} else if bytes.HasPrefix(line, []byte("event: ")) {
 			if _, err := w.Write(line); err != nil {
 				return meta, err

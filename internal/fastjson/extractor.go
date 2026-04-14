@@ -147,6 +147,10 @@ func (e *UsageExtractor) extractOpenAIStd(data []byte) (*llmproxy.Usage, *llmpro
 		TotalTokens:      resp.Usage.TotalTokens,
 	}
 
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+
 	var cacheUsage *llmproxy.CacheUsage
 	if resp.Usage.PromptTokensDetails != nil && resp.Usage.PromptTokensDetails.CachedTokens > 0 {
 		cacheUsage = &llmproxy.CacheUsage{
@@ -219,12 +223,22 @@ func (e *UsageExtractor) extractAnthropicSimd(data []byte) (*llmproxy.Usage, *ll
 				v, _ := tmpIter.Int()
 				cacheUsage.CacheReadInputTokens = int(v)
 			}
+		case "ephemeral_5m_input_tokens":
+			if t == simdjson.TypeInt {
+				v, _ := tmpIter.Int()
+				cacheUsage.Ephemeral5mInputTokens = int(v)
+			}
+		case "ephemeral_1h_input_tokens":
+			if t == simdjson.TypeInt {
+				v, _ := tmpIter.Int()
+				cacheUsage.Ephemeral1hInputTokens = int(v)
+			}
 		}
 	}
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
-	hasCache := cacheUsage.CacheCreationInputTokens > 0 || cacheUsage.CacheReadInputTokens > 0
+	hasCache := cacheUsage.CacheCreationInputTokens > 0 || cacheUsage.CacheReadInputTokens > 0 || cacheUsage.Ephemeral5mInputTokens > 0 || cacheUsage.Ephemeral1hInputTokens > 0
 	if !hasCache {
 		cacheUsage = nil
 	}
@@ -239,6 +253,8 @@ func (e *UsageExtractor) extractAnthropicStd(data []byte) (*llmproxy.Usage, *llm
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			Ephemeral5mInputTokens   int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens   int `json:"ephemeral_1h_input_tokens"`
 		} `json:"usage"`
 	}
 
@@ -257,10 +273,12 @@ func (e *UsageExtractor) extractAnthropicStd(data []byte) (*llmproxy.Usage, *llm
 	}
 
 	var cacheUsage *llmproxy.CacheUsage
-	if resp.Usage.CacheCreationInputTokens > 0 || resp.Usage.CacheReadInputTokens > 0 {
+	if resp.Usage.CacheCreationInputTokens > 0 || resp.Usage.CacheReadInputTokens > 0 || resp.Usage.Ephemeral5mInputTokens > 0 || resp.Usage.Ephemeral1hInputTokens > 0 {
 		cacheUsage = &llmproxy.CacheUsage{
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			Ephemeral5mInputTokens:   resp.Usage.Ephemeral5mInputTokens,
+			Ephemeral1hInputTokens:   resp.Usage.Ephemeral1hInputTokens,
 		}
 	}
 

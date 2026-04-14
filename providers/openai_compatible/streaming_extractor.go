@@ -113,6 +113,15 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 				break
 			}
 
+			// Forward the raw data regardless of parsing success
+			if _, err := w.Write(line); err != nil {
+				return meta, err
+			}
+			if _, err := w.Write([]byte("\n\n")); err != nil {
+				return meta, err
+			}
+			_ = rc.Flush()
+
 			chunk, err := llmproxy.ParseOpenAISSEEvent(data)
 			if err != nil {
 				continue
@@ -140,14 +149,6 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 					accumulatedUsage = usage
 				}
 			}
-
-			if _, err := w.Write(line); err != nil {
-				return meta, err
-			}
-			if _, err := w.Write([]byte("\n\n")); err != nil {
-				return meta, err
-			}
-			_ = rc.Flush()
 		} else {
 			if _, err := w.Write(line); err != nil {
 				return meta, err

@@ -25,8 +25,10 @@ type SSEParser struct {
 }
 
 func NewSSEParser(r io.Reader) *SSEParser {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	return &SSEParser{
-		scanner: bufio.NewScanner(r),
+		scanner: scanner,
 	}
 }
 
@@ -284,8 +286,12 @@ func FormatSSEEvent(event string, data []byte) []byte {
 		buf.WriteString(event)
 		buf.WriteByte('\n')
 	}
-	buf.WriteString("data: ")
-	buf.Write(data)
-	buf.WriteString("\n\n")
+	// Split data on newlines and write each as a separate "data:" line
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		buf.WriteString("data: ")
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	buf.WriteByte('\n')
 	return buf.Bytes()
 }

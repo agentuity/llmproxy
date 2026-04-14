@@ -241,7 +241,13 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		if a.billingCalculator != nil {
 			if stream, ok := raw["stream"].(bool); ok && stream {
 				if !nativeStreamUsageProviders[providerName] {
-					raw["stream_options"] = map[string]any{"include_usage": true}
+					// Merge include_usage into existing stream_options if present
+					streamOpts, ok := raw["stream_options"].(map[string]any)
+					if !ok {
+						streamOpts = make(map[string]any)
+						raw["stream_options"] = streamOpts
+					}
+					streamOpts["include_usage"] = true
 				}
 			}
 		}
@@ -289,11 +295,35 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 	ctxValue := MetaContextValue{Meta: meta, RawBody: body}
 	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), MetaContextKey{}, ctxValue))
 
-	upstreamResp, err := a.client.Do(upstreamReq)
+	// Wrap with interceptor chain (mirrors Forward method pattern)
+	chain := a.interceptors
+	doRequest := func(req *http.Request) (*http.Response, ResponseMetadata, []byte, error) {
+		resp, err := a.client.Do(req)
+		if err != nil {
+			return nil, ResponseMetadata{}, nil, err
+		}
+		// For streaming: return response with body still open.
+		// ResponseMetadata will be extracted during streaming.
+		return resp, ResponseMetadata{}, nil, nil
+	}
+
+	if len(chain) > 0 {
+		doRequest = chain.Wrap(doRequest)
+	}
+
+	upstreamResp, _, _, err := doRequest(upstreamReq)
 	if err != nil {
 		return ResponseMetadata{}, err
 	}
+	if upstreamResp == nil {
+		return ResponseMetadata{}, errors.New("no response from upstream")
+	}
 	defer upstreamResp.Body.Close()
+
+	// Declare HTTP trailers for billing headers (must be before WriteHeader)
+	if a.billingCalculator != nil {
+		w.Header().Set("Trailer", "X-Gateway-Cost,X-Gateway-Prompt-Tokens,X-Gateway-Completion-Tokens")
+	}
 
 	for k, v := range upstreamResp.Header {
 		if k != "Content-Length" {
@@ -324,6 +354,12 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 
 	if a.billingCalculator != nil {
 		a.billingCalculator.Calculate(meta, &respMeta)
+		// Set billing headers as HTTP trailers (sent after body completes)
+		if billing, ok := respMeta.Custom["billing_result"].(BillingResult); ok {
+			w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
+			w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
+			w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
+		}
 	}
 
 	return respMeta, nil
@@ -391,19 +427,14 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	if isStreamingRequest {
-		meta, err := a.ForwardStreaming(r.Context(), r, w)
+		_, err := a.ForwardStreaming(r.Context(), r, w)
 		if err != nil {
 			if !headerSent(w) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 			return
 		}
-
-		if billing, ok := meta.Custom["billing_result"].(BillingResult); ok {
-			w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
-			w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
-			w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
-		}
+		// Billing headers are sent as HTTP trailers in ForwardStreaming
 		return
 	}
 

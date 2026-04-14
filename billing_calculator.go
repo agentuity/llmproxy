@@ -13,6 +13,9 @@ func NewBillingCalculator(lookup CostLookup, onResult func(BillingResult)) *Bill
 }
 
 func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetadata) *BillingResult {
+	if c.lookup == nil || respMeta == nil {
+		return nil
+	}
 	var provider string
 	if meta.Custom != nil {
 		if p, ok := meta.Custom["provider"].(string); ok && p != "" {
