@@ -14,8 +14,9 @@ type Resolver struct {
 	BaseURL *url.URL
 }
 
-// Resolve returns the full URL for the generateContent endpoint.
-// The URL format is: {base}/v1beta/models/{model}:generateContent
+// Resolve returns the full URL for the generateContent or streamGenerateContent endpoint.
+// When meta.Stream is true, the URL uses streamGenerateContent with alt=sse for SSE format.
+// Otherwise, the URL uses generateContent.
 //
 // If meta.Model is empty, defaults to "gemini-pro".
 func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
@@ -24,7 +25,15 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 		model = "gemini-pro"
 	}
 
-	endpoint := r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:generateContent", model))
+	var endpoint *url.URL
+	if meta.Stream {
+		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:streamGenerateContent", model))
+		q := endpoint.Query()
+		q.Set("alt", "sse")
+		endpoint.RawQuery = q.Encode()
+	} else {
+		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:generateContent", model))
+	}
 	return endpoint, nil
 }
 

@@ -16,8 +16,10 @@ type Resolver struct {
 }
 
 // Resolve returns the Bedrock endpoint URL for the given model.
-// The URL format depends on whether we use the Converse or Invoke API:
-//   - Converse: https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/converse
+// The URL format depends on whether we use the Converse or Invoke API,
+// and whether streaming is requested:
+//   - Converse (streaming): https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/converse-stream
+//   - Converse (non-streaming): https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/converse
 //   - Invoke: https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/invoke
 func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 	modelID := meta.Model
@@ -30,7 +32,11 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 
 	var endpoint string
 	if r.UseConverse {
-		endpoint = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", r.Region, encodedModelID)
+		if meta.Stream {
+			endpoint = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse-stream", r.Region, encodedModelID)
+		} else {
+			endpoint = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", r.Region, encodedModelID)
+		}
 	} else {
 		endpoint = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke", r.Region, encodedModelID)
 	}

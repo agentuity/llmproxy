@@ -273,6 +273,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 	}
 	meta.Custom["api_type"] = apiType
 	meta.Custom["provider"] = providerName
+	meta.Stream = true
 
 	upstreamURL, err := provider.URLResolver().Resolve(meta)
 	if err != nil {
