@@ -1,16 +1,84 @@
 package googleai
 
 import (
+	"bytes"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/agentuity/llmproxy"
 )
+
+// threadSafeResponseWriter is an http.ResponseWriter that is safe for concurrent access.
+// It signals via a channel when the first write occurs.
+type threadSafeResponseWriter struct {
+	mu         sync.Mutex
+	buf        bytes.Buffer
+	header     http.Header
+	wroteHead  bool
+	firstWrite chan struct{}
+	closed     atomic.Bool
+}
+
+func newThreadSafeResponseWriter() *threadSafeResponseWriter {
+	return &threadSafeResponseWriter{
+		header:     make(http.Header),
+		firstWrite: make(chan struct{}),
+	}
+}
+
+func (w *threadSafeResponseWriter) Header() http.Header {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.header
+}
+
+func (w *threadSafeResponseWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	wrote := w.wroteHead
+	if !wrote {
+		w.wroteHead = true
+	}
+	n, err := w.buf.Write(data)
+	w.mu.Unlock()
+
+	if !wrote && !w.closed.Swap(true) {
+		close(w.firstWrite)
+	}
+	return n, err
+}
+
+func (w *threadSafeResponseWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	w.wroteHead = true
+	w.mu.Unlock()
+}
+
+func (w *threadSafeResponseWriter) Flush() {
+	// No-op for test - the actual flush would happen in real ResponseWriter
+}
+
+func (w *threadSafeResponseWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Bytes()
+}
+
+func (w *threadSafeResponseWriter) Len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Len()
+}
+
+func (w *threadSafeResponseWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
 
 func TestStreamingExtractor_ExtractStreaming(t *testing.T) {
 	streamData := `data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}}
@@ -25,7 +93,7 @@ data: {"candidates":[{"content":{"parts":[{"text":" World"}],"role":"model"},"fi
 		Body:       io.NopCloser(strings.NewReader(streamData)),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
@@ -58,7 +126,7 @@ data: {"candidates":[{"content":{"parts":[{"text":" World"}],"role":"model"},"fi
 	}
 
 	// Verify data was forwarded to client
-	output := recorder.Body.String()
+	output := recorder.String()
 	if !strings.Contains(output, "data: ") {
 		t.Error("expected SSE data format in output")
 	}
@@ -74,10 +142,6 @@ func TestStreamingExtractor_StreamsIncrementally(t *testing.T) {
 	// Use a pipe to simulate slow upstream that sends data over time
 	pr, pw := io.Pipe()
 
-	var mu sync.Mutex
-	var firstChunkTime time.Time
-	var streamDoneTime time.Time
-
 	// Simulate upstream sending events with delay
 	go func() {
 		defer pw.Close()
@@ -92,42 +156,35 @@ func TestStreamingExtractor_StreamsIncrementally(t *testing.T) {
 		Body:       io.NopCloser(pr),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
 
-	// Monitor when data arrives at the recorder
+	// Use a channel to safely receive the first write time
+	firstChunkTimeCh := make(chan time.Time, 1)
 	go func() {
-		for {
-			mu.Lock()
-			if recorder.Body.Len() > 0 && firstChunkTime.IsZero() {
-				firstChunkTime = time.Now()
-			}
-			mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
-		}
+		<-recorder.firstWrite
+		firstChunkTimeCh <- time.Now()
 	}()
 
 	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
-	mu.Lock()
-	streamDoneTime = time.Now()
-	mu.Unlock()
+	streamDoneTime := time.Now()
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Verify first data arrived before stream completed
-	mu.Lock()
-	defer mu.Unlock()
-	if firstChunkTime.IsZero() {
+	select {
+	case firstChunkTime := <-firstChunkTimeCh:
+		// The stream takes ~100ms. First data should arrive well before completion.
+		timeDiff := streamDoneTime.Sub(firstChunkTime)
+		if timeDiff < 50*time.Millisecond {
+			t.Errorf("data did not arrive incrementally: first chunk and completion were only %v apart", timeDiff)
+		}
+	default:
 		t.Fatal("no data was received")
-	}
-	// The stream takes ~100ms. First data should arrive well before completion.
-	timeDiff := streamDoneTime.Sub(firstChunkTime)
-	if timeDiff < 50*time.Millisecond {
-		t.Errorf("data did not arrive incrementally: first chunk and completion were only %v apart", timeDiff)
 	}
 
 	// Verify metadata was still extracted
@@ -173,7 +230,7 @@ func TestStreamingExtractor_NonStreamingFallback(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
@@ -195,7 +252,7 @@ func TestStreamingExtractor_NonStreamingFallback(t *testing.T) {
 	}
 
 	// Verify body was forwarded
-	output := recorder.Body.String()
+	output := recorder.String()
 	if output != respBody {
 		t.Errorf("expected body to be forwarded, got %q", output)
 	}
@@ -212,7 +269,7 @@ func TestStreamingExtractor_ModelExtraction(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(streamData)),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
@@ -233,7 +290,7 @@ func TestStreamingExtractor_EmptyStream(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader("")),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()

@@ -6,14 +6,75 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/agentuity/llmproxy"
 )
+
+// threadSafeResponseWriter is an http.ResponseWriter that is safe for concurrent access.
+// It signals via a channel when the first write occurs.
+type threadSafeResponseWriter struct {
+	mu         sync.Mutex
+	buf        bytes.Buffer
+	header     http.Header
+	wroteHead  bool
+	firstWrite chan struct{}
+	closed     atomic.Bool
+}
+
+func newThreadSafeResponseWriter() *threadSafeResponseWriter {
+	return &threadSafeResponseWriter{
+		header:     make(http.Header),
+		firstWrite: make(chan struct{}),
+	}
+}
+
+func (w *threadSafeResponseWriter) Header() http.Header {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.header
+}
+
+func (w *threadSafeResponseWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	wrote := w.wroteHead
+	if !wrote {
+		w.wroteHead = true
+	}
+	n, err := w.buf.Write(data)
+	w.mu.Unlock()
+
+	if !wrote && !w.closed.Swap(true) {
+		close(w.firstWrite)
+	}
+	return n, err
+}
+
+func (w *threadSafeResponseWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	w.wroteHead = true
+	w.mu.Unlock()
+}
+
+func (w *threadSafeResponseWriter) Flush() {
+	// No-op for test - the actual flush would happen in real ResponseWriter
+}
+
+func (w *threadSafeResponseWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Bytes()
+}
+
+func (w *threadSafeResponseWriter) Len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Len()
+}
 
 // buildEventStreamMessage constructs a binary AWS event stream message
 // with the given event type and JSON payload.
@@ -90,7 +151,7 @@ func TestStreamingExtractor_EventStream(t *testing.T) {
 		Body:       io.NopCloser(&stream),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
@@ -130,7 +191,7 @@ func TestStreamingExtractor_EventStream(t *testing.T) {
 	}
 
 	// Verify data was forwarded to client
-	if recorder.Body.Len() == 0 {
+	if recorder.Len() == 0 {
 		t.Error("no data written to client")
 	}
 }
@@ -138,10 +199,6 @@ func TestStreamingExtractor_EventStream(t *testing.T) {
 func TestStreamingExtractor_EventStreamIncremental(t *testing.T) {
 	// Use a pipe to simulate slow upstream
 	pr, pw := io.Pipe()
-
-	var mu sync.Mutex
-	var firstByteTime time.Time
-	var streamDoneTime time.Time
 
 	// Send events with delay to verify incrementality
 	go func() {
@@ -180,41 +237,34 @@ func TestStreamingExtractor_EventStreamIncremental(t *testing.T) {
 		Body:       io.NopCloser(pr),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
 
-	// Monitor when data arrives
+	// Use a channel to safely receive the first write time
+	firstByteTimeCh := make(chan time.Time, 1)
 	go func() {
-		for {
-			mu.Lock()
-			if recorder.Body.Len() > 0 && firstByteTime.IsZero() {
-				firstByteTime = time.Now()
-			}
-			mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
-		}
+		<-recorder.firstWrite
+		firstByteTimeCh <- time.Now()
 	}()
 
 	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
-	mu.Lock()
-	streamDoneTime = time.Now()
-	mu.Unlock()
+	streamDoneTime := time.Now()
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Verify first bytes arrived before stream completed
-	mu.Lock()
-	defer mu.Unlock()
-	if firstByteTime.IsZero() {
+	select {
+	case firstByteTime := <-firstByteTimeCh:
+		timeDiff := streamDoneTime.Sub(firstByteTime)
+		if timeDiff < 50*time.Millisecond {
+			t.Errorf("data did not arrive incrementally: first chunk and completion were only %v apart", timeDiff)
+		}
+	default:
 		t.Fatal("no data was received")
-	}
-	timeDiff := streamDoneTime.Sub(firstByteTime)
-	if timeDiff < 50*time.Millisecond {
-		t.Errorf("data did not arrive incrementally: first chunk and completion were only %v apart", timeDiff)
 	}
 
 	// Verify metadata was still extracted
@@ -261,7 +311,7 @@ func TestStreamingExtractor_NonStreamingFallback(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
@@ -315,7 +365,7 @@ func TestStreamingExtractor_EventStreamWithCache(t *testing.T) {
 		Body:       io.NopCloser(&stream),
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newThreadSafeResponseWriter()
 	rc := http.NewResponseController(recorder)
 
 	extractor := NewStreamingExtractor()
