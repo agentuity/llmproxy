@@ -85,15 +85,19 @@ func TestSSEParser(t *testing.T) {
 
 func TestParseOpenAISSEEvent(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       []byte
-		expectError bool
-		expectDone  bool
+		name            string
+		input           []byte
+		expectError     bool
+		expectDone      bool
+		expectedID      string
+		expectedContent string
 	}{
 		{
-			name:        "valid chunk",
-			input:       []byte(`{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"}}]}`),
-			expectError: false,
+			name:            "valid chunk",
+			input:           []byte(`{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"}}]}`),
+			expectError:     false,
+			expectedID:      "chatcmpl-123",
+			expectedContent: "Hello",
 		},
 		{
 			name:        "done marker",
@@ -133,10 +137,26 @@ func TestParseOpenAISSEEvent(t *testing.T) {
 
 			if err != nil && !tt.expectError {
 				t.Errorf("unexpected error: %v", err)
+				return
 			}
 
-			if chunk != nil && tt.input != nil && len(tt.input) > 0 {
-				_ = chunk.ID
+			if len(tt.input) == 0 {
+				if chunk != nil {
+					t.Error("expected nil chunk for empty input")
+				}
+				return
+			}
+
+			if chunk == nil {
+				t.Fatal("expected non-nil chunk for non-empty input")
+			}
+
+			if chunk.ID != tt.expectedID {
+				t.Errorf("expected ID %q, got %q", tt.expectedID, chunk.ID)
+			}
+
+			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != tt.expectedContent {
+				t.Errorf("expected content %q, got %q", tt.expectedContent, chunk.Choices[0].Delta.Content)
 			}
 		})
 	}
@@ -437,8 +457,8 @@ func TestExtractUsageFromAnthropicEvent(t *testing.T) {
 			result := ExtractUsageFromAnthropicEvent(tt.event)
 
 			if tt.expectedPrompt == 0 && tt.expectedCompletion == 0 {
-				if result != nil && (result.PromptTokens != 0 || result.CompletionTokens != 0) {
-					t.Errorf("expected nil or zero usage, got %+v", result)
+				if result != nil {
+					t.Errorf("expected nil result, got %+v", result)
 				}
 				return
 			}
@@ -516,7 +536,10 @@ data: {"type":"message_stop"}
 	if string(events[0].Event) != "message_start" {
 		t.Errorf("expected event 'message_start', got %q", events[0].Event)
 	}
-	startEvent, _ := ParseAnthropicSSEEvent(events[0].Data)
+	startEvent, err := ParseAnthropicSSEEvent(events[0].Data)
+	if err != nil {
+		t.Fatalf("ParseAnthropicSSEEvent failed for events[0]: %v", err)
+	}
 	if startEvent.Message.Usage.InputTokens != 150 {
 		t.Errorf("expected 150 input tokens, got %d", startEvent.Message.Usage.InputTokens)
 	}
@@ -528,7 +551,10 @@ data: {"type":"message_stop"}
 	if string(events[5].Event) != "message_delta" {
 		t.Errorf("expected event 'message_delta', got %q", events[5].Event)
 	}
-	deltaEvent, _ := ParseAnthropicSSEEvent(events[5].Data)
+	deltaEvent, err := ParseAnthropicSSEEvent(events[5].Data)
+	if err != nil {
+		t.Fatalf("ParseAnthropicSSEEvent failed for events[5]: %v", err)
+	}
 	if deltaEvent.Usage.OutputTokens != 25 {
 		t.Errorf("expected 25 output tokens, got %d", deltaEvent.Usage.OutputTokens)
 	}
