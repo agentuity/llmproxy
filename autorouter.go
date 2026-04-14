@@ -95,12 +95,16 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	var provider Provider
 	if providerName != "" {
 		provider, _ = a.registry.Get(providerName)
-	}
-	if provider == nil {
+		if provider == nil {
+			// Explicit provider name was provided but not found in registry
+			return nil, ResponseMetadata{}, ErrNoProvider
+		}
+	} else {
+		// No provider detected, use fallback
 		provider = a.fallbackProvider
-	}
-	if provider == nil {
-		return nil, ResponseMetadata{}, ErrNoProvider
+		if provider == nil {
+			return nil, ResponseMetadata{}, ErrNoProvider
+		}
 	}
 
 	// Strip provider prefix from model name (e.g., "openai/gpt-4" -> "gpt-4")
@@ -131,6 +135,7 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		meta.Custom = make(map[string]any)
 	}
 	meta.Custom["api_type"] = apiType
+	meta.Custom["provider"] = providerName
 
 	upstreamURL, err := provider.URLResolver().Resolve(meta)
 	if err != nil {

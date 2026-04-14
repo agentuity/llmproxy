@@ -83,7 +83,7 @@ The main entry point. `Forward(ctx, req)` orchestrates the full request lifecycl
 
 An HTTP handler that provides automatic provider and API type detection from a single endpoint. Implements `http.Handler` for easy integration.
 
-```
+```text
 Forward(ctx, req) -> (resp, meta, err)
 ServeHTTP(w, r)
 ```
@@ -100,6 +100,7 @@ ServeHTTP(w, r)
 
 - `WithAutoRouterRegistry(r)` — Use custom registry
 - `WithAutoRouterDetector(d)` — Custom provider detection logic
+- `WithAutoRouterModelProviderLookup(lookup)` — Hook for model→provider mapping (e.g., models.dev-backed detection); called when model pattern detection fails
 - `WithAutoRouterInterceptor(i)` — Add interceptor to chain
 - `WithAutoRouterHTTPClient(c)` — Custom HTTP client
 - `WithAutoRouterFallbackProvider(p)` — Provider when detection fails
@@ -107,6 +108,7 @@ ServeHTTP(w, r)
 **Example:**
 
 ```go
+// Basic setup
 router := llmproxy.NewAutoRouter(
     llmproxy.WithAutoRouterFallbackProvider(openaiProvider),
     llmproxy.WithAutoRouterInterceptor(interceptors.NewLogging(logger)),
@@ -115,6 +117,15 @@ router.RegisterProvider(openaiProvider)
 router.RegisterProvider(anthropicProvider)
 
 http.Handle("/", router)
+```
+
+```go
+// With models.dev-backed provider detection
+adapter, _ := modelsdev.LoadFromURL()
+router := llmproxy.NewAutoRouter(
+    llmproxy.WithAutoRouterModelProviderLookup(adapter.FindProviderForModel),
+    llmproxy.WithAutoRouterFallbackProvider(openaiProvider),
+)
 ```
 
 ---

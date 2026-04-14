@@ -24,8 +24,16 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 		return resp, respMeta, rawRespBody, err
 	}
 
-	// Use shared provider detection for consistency with routing
-	provider := llmproxy.DetectProviderFromModel(meta.Model)
+	// Prefer router-resolved provider from metadata, fall back to model detection
+	var provider string
+	if meta.Custom != nil {
+		if p, ok := meta.Custom["provider"].(string); ok && p != "" {
+			provider = p
+		}
+	}
+	if provider == "" {
+		provider = llmproxy.DetectProviderFromModel(meta.Model)
+	}
 
 	// Look up pricing with provider first
 	costInfo, found := i.Lookup(provider, meta.Model)

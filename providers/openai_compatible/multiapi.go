@@ -2,6 +2,7 @@ package openai_compatible
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 
@@ -53,15 +54,25 @@ func (e *MultiAPIExtractor) Extract(resp *http.Response) (llmproxy.ResponseMetad
 	if err != nil {
 		return llmproxy.ResponseMetadata{}, nil, err
 	}
+	resp.Body.Close()
 
-	// Use same detection logic as parser for consistency
-	apiType := llmproxy.DetectAPIType(body)
-	switch apiType {
-	case llmproxy.APITypeResponses:
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return e.responsesExtractor.Extract(resp)
-	default:
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return e.chatCompletionsExtractor.Extract(resp)
+	// Detect response type by inspecting response-specific fields
+	// Responses API has "output" and "status", Chat Completions has "choices"
+	var raw map[string]any
+	isResponsesAPI := false
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if _, hasOutput := raw["output"]; hasOutput {
+			if _, hasChoices := raw["choices"]; !hasChoices {
+				isResponsesAPI = true
+			}
+		}
 	}
+
+	// Restore body for downstream extractors
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	if isResponsesAPI {
+		return e.responsesExtractor.Extract(resp)
+	}
+	return e.chatCompletionsExtractor.Extract(resp)
 }

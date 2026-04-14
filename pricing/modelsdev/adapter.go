@@ -189,11 +189,23 @@ func (a *Adapter) Lookup(provider string, model string) (llmproxy.CostInfo, bool
 // FindProviderForModel searches all providers to find which one has the given model.
 // Returns the provider ID if found, or empty string if not found.
 // This is useful for provider detection when the model name is known but provider is not.
+//
+// If data is not loaded or TTL expired, it loads automatically.
+// Note: Auto-load uses context.Background() - call Load() explicitly
+// to control the context for initial load.
 func (a *Adapter) FindProviderForModel(model string) string {
+	a.mu.RLock()
+	needLoad := len(a.data) == 0 || (!a.expires.IsZero() && time.Now().After(a.expires))
+	a.mu.RUnlock()
+
+	if needLoad {
+		_ = a.Load(context.Background())
+	}
+
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if a.data == nil {
+	if len(a.data) == 0 {
 		return ""
 	}
 
