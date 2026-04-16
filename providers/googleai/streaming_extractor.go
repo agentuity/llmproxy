@@ -103,7 +103,11 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 				}
 				if candidate.Content != nil {
 					text := extractTextFromParts(candidate.Content.Parts)
-					meta.Choices[i].Message.Content += text
+					if str, ok := meta.Choices[i].Message.Content.(string); ok {
+						meta.Choices[i].Message.Content = str + text
+					} else {
+						meta.Choices[i].Message.Content = text
+					}
 				}
 				if candidate.FinishReason != "" {
 					meta.Choices[i].FinishReason = mapFinishReason(candidate.FinishReason)

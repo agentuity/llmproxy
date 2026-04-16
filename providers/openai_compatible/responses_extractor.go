@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -17,8 +18,26 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	}
 
 	var responsesResp ResponsesResponse
+	var isBareArray bool
 	if err := json.Unmarshal(body, &responsesResp); err != nil {
-		return llmproxy.ResponseMetadata{}, nil, err
+		firstNonWhitespace := -1
+		for i, b := range body {
+			if b != ' ' && b != '\n' && b != '\r' && b != '\t' {
+				firstNonWhitespace = i
+				break
+			}
+		}
+		if firstNonWhitespace >= 0 && body[firstNonWhitespace] == '[' {
+			var outputItems []ResponsesOutputItem
+			if err := json.Unmarshal(body, &outputItems); err != nil {
+				return llmproxy.ResponseMetadata{}, nil, err
+			}
+			responsesResp.Output = outputItems
+			responsesResp.Status = "completed"
+			isBareArray = true
+		} else {
+			return llmproxy.ResponseMetadata{}, nil, err
+		}
 	}
 
 	meta := llmproxy.ResponseMetadata{
@@ -55,6 +74,19 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	if responsesResp.Error != nil {
 		meta.Custom["error"] = responsesResp.Error
 	}
+	if len(responsesResp.Output) > 0 {
+		meta.Custom["output"] = responsesResp.Output
+		if isBareArray {
+			meta.Custom["output_raw"] = json.RawMessage(body)
+		} else {
+			var rawBody struct {
+				Output json.RawMessage `json:"output"`
+			}
+			if err := json.Unmarshal(body, &rawBody); err == nil && len(rawBody.Output) > 0 {
+				meta.Custom["output_raw"] = rawBody.Output
+			}
+		}
+	}
 
 	return meta, body, nil
 }
@@ -73,15 +105,7 @@ func extractResponsesContent(output []ResponsesOutputItem) string {
 	if len(texts) == 0 {
 		return ""
 	}
-	if len(texts) == 1 {
-		return texts[0]
-	}
-	// Join multiple text segments with newline
-	result := texts[0]
-	for _, t := range texts[1:] {
-		result += "\n" + t
-	}
-	return result
+	return strings.Join(texts, "\n")
 }
 
 type ResponsesResponse struct {
@@ -96,16 +120,35 @@ type ResponsesResponse struct {
 }
 
 type ResponsesOutputItem struct {
-	ID      string                   `json:"id"`
-	Type    string                   `json:"type"`
-	Status  string                   `json:"status"`
-	Role    string                   `json:"role,omitempty"`
-	Content []ResponsesOutputContent `json:"content,omitempty"`
+	ID        string                   `json:"id"`
+	Type      string                   `json:"type"`
+	Status    string                   `json:"status"`
+	Role      string                   `json:"role,omitempty"`
+	Content   []ResponsesOutputContent `json:"content,omitempty"`
+	Name      string                   `json:"name,omitempty"`
+	Arguments string                   `json:"arguments,omitempty"`
+	Summary   []ResponsesOutputSummary `json:"summary,omitempty"`
+}
+
+type ResponsesOutputSummary struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 type ResponsesOutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type        string                      `json:"type"`
+	Text        string                      `json:"text,omitempty"`
+	Annotations []ResponsesOutputAnnotation `json:"annotations,omitempty"`
+	Logprobs    interface{}                 `json:"logprobs,omitempty"`
+}
+
+type ResponsesOutputAnnotation struct {
+	Type       string `json:"type"`
+	Title      string `json:"title,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Index      *int   `json:"index,omitempty"`
+	StartIndex *int   `json:"start_index,omitempty"`
+	EndIndex   *int   `json:"end_index,omitempty"`
 }
 
 type ResponsesUsage struct {
