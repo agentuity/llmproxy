@@ -74,6 +74,12 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	}
 	if len(responsesResp.Output) > 0 {
 		meta.Custom["output"] = responsesResp.Output
+		var rawBody struct {
+			Output json.RawMessage `json:"output"`
+		}
+		if err := json.Unmarshal(body, &rawBody); err == nil && len(rawBody.Output) > 0 {
+			meta.Custom["output_raw"] = rawBody.Output
+		}
 	}
 
 	return meta, body, nil
@@ -131,10 +137,12 @@ type ResponsesOutputContent struct {
 }
 
 type ResponsesOutputAnnotation struct {
-	Type  string `json:"type"`
-	Title string `json:"title,omitempty"`
-	URL   string `json:"url,omitempty"`
-	Index *int   `json:"index,omitempty"`
+	Type       string `json:"type"`
+	Title      string `json:"title,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Index      *int   `json:"index,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
 }
 
 type ResponsesUsage struct {

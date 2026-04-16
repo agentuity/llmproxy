@@ -2,6 +2,7 @@ package openai_compatible
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -1258,5 +1259,245 @@ func TestResponsesExtractor_OutputSummary(t *testing.T) {
 	output := meta.Custom["output"].([]ResponsesOutputItem)
 	if output[0].Type != "reasoning" {
 		t.Errorf("First output type = %q, want reasoning", output[0].Type)
+	}
+}
+
+func TestResponsesExtractor_AnnotationSpanFields(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [
+			{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "Check out this article",
+						"annotations": [
+							{
+								"type": "url_citation",
+								"title": "Example Article",
+								"url": "https://example.com/article",
+								"start_index": 10,
+								"end_index": 25
+							}
+						]
+					}
+				]
+			}
+		],
+		"usage": {"total_tokens": 50}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	output := meta.Custom["output"].([]ResponsesOutputItem)
+	if len(output) != 1 {
+		t.Fatalf("Expected 1 output item, got %d", len(output))
+	}
+
+	annotations := output[0].Content[0].Annotations
+	if len(annotations) != 1 {
+		t.Fatalf("Expected 1 annotation, got %d", len(annotations))
+	}
+
+	annotation := annotations[0]
+	if annotation.StartIndex != 10 {
+		t.Errorf("StartIndex = %d, want 10", annotation.StartIndex)
+	}
+	if annotation.EndIndex != 25 {
+		t.Errorf("EndIndex = %d, want 25", annotation.EndIndex)
+	}
+	if annotation.Type != "url_citation" {
+		t.Errorf("Type = %q, want url_citation", annotation.Type)
+	}
+	if annotation.Title != "Example Article" {
+		t.Errorf("Title = %q, want 'Example Article'", annotation.Title)
+	}
+}
+
+func TestResponsesExtractor_RawOutputPreservation(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [
+			{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "Hello",
+						"annotations": [
+							{
+								"type": "url_citation",
+								"title": "Test",
+								"url": "https://example.com",
+								"start_index": 0,
+								"end_index": 5
+							}
+						]
+					}
+				]
+			}
+		],
+		"usage": {"total_tokens": 50}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	rawOutput, ok := meta.Custom["output_raw"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("output_raw should be json.RawMessage, got %T", meta.Custom["output_raw"])
+	}
+
+	var outputItems []map[string]interface{}
+	if err := json.Unmarshal(rawOutput, &outputItems); err != nil {
+		t.Fatalf("Failed to unmarshal raw output: %v", err)
+	}
+
+	if len(outputItems) != 1 {
+		t.Errorf("Expected 1 output item in raw, got %d", len(outputItems))
+	}
+
+	content := outputItems[0]["content"].([]interface{})
+	annotations := content[0].(map[string]interface{})["annotations"].([]interface{})
+	annotation := annotations[0].(map[string]interface{})
+
+	if annotation["start_index"].(float64) != 0 {
+		t.Errorf("Raw annotation start_index = %v, want 0", annotation["start_index"])
+	}
+	if annotation["end_index"].(float64) != 5 {
+		t.Errorf("Raw annotation end_index = %v, want 5", annotation["end_index"])
+	}
+}
+
+func TestResponsesExtractor_RawOutputWithMultipleAnnotations(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [
+			{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "See [article1] and [article2] for more",
+						"annotations": [
+							{
+								"type": "url_citation",
+								"title": "Article 1",
+								"url": "https://example.com/1",
+								"start_index": 4,
+								"end_index": 14
+							},
+							{
+								"type": "url_citation",
+								"title": "Article 2",
+								"url": "https://example.com/2",
+								"start_index": 19,
+								"end_index": 29
+							}
+						]
+					}
+				]
+			}
+		],
+		"usage": {"total_tokens": 100}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	output := meta.Custom["output"].([]ResponsesOutputItem)
+	annotations := output[0].Content[0].Annotations
+	if len(annotations) != 2 {
+		t.Fatalf("Expected 2 annotations, got %d", len(annotations))
+	}
+
+	if annotations[0].StartIndex != 4 || annotations[0].EndIndex != 14 {
+		t.Errorf("First annotation span = [%d, %d], want [4, 14]", annotations[0].StartIndex, annotations[0].EndIndex)
+	}
+	if annotations[1].StartIndex != 19 || annotations[1].EndIndex != 29 {
+		t.Errorf("Second annotation span = [%d, %d], want [19, 29]", annotations[1].StartIndex, annotations[1].EndIndex)
+	}
+
+	rawOutput := meta.Custom["output_raw"].(json.RawMessage)
+	var rawItems []ResponsesOutputItem
+	if err := json.Unmarshal(rawOutput, &rawItems); err != nil {
+		t.Fatalf("Failed to unmarshal raw output: %v", err)
+	}
+	if len(rawItems[0].Content[0].Annotations) != 2 {
+		t.Errorf("Raw output should have 2 annotations, got %d", len(rawItems[0].Content[0].Annotations))
+	}
+}
+
+func TestResponsesExtractor_NoRawOutputWhenEmpty(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [],
+		"usage": {"total_tokens": 0}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	if _, ok := meta.Custom["output"]; ok {
+		t.Error("output should not be set when empty")
+	}
+	if _, ok := meta.Custom["output_raw"]; ok {
+		t.Error("output_raw should not be set when output is empty")
 	}
 }
