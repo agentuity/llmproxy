@@ -18,6 +18,7 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	}
 
 	var responsesResp ResponsesResponse
+	var isBareArray bool
 	if err := json.Unmarshal(body, &responsesResp); err != nil {
 		firstNonWhitespace := -1
 		for i, b := range body {
@@ -33,6 +34,7 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 			}
 			responsesResp.Output = outputItems
 			responsesResp.Status = "completed"
+			isBareArray = true
 		} else {
 			return llmproxy.ResponseMetadata{}, nil, err
 		}
@@ -74,11 +76,15 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	}
 	if len(responsesResp.Output) > 0 {
 		meta.Custom["output"] = responsesResp.Output
-		var rawBody struct {
-			Output json.RawMessage `json:"output"`
-		}
-		if err := json.Unmarshal(body, &rawBody); err == nil && len(rawBody.Output) > 0 {
-			meta.Custom["output_raw"] = rawBody.Output
+		if isBareArray {
+			meta.Custom["output_raw"] = json.RawMessage(body)
+		} else {
+			var rawBody struct {
+				Output json.RawMessage `json:"output"`
+			}
+			if err := json.Unmarshal(body, &rawBody); err == nil && len(rawBody.Output) > 0 {
+				meta.Custom["output_raw"] = rawBody.Output
+			}
 		}
 	}
 
@@ -141,8 +147,8 @@ type ResponsesOutputAnnotation struct {
 	Title      string `json:"title,omitempty"`
 	URL        string `json:"url,omitempty"`
 	Index      *int   `json:"index,omitempty"`
-	StartIndex int    `json:"start_index,omitempty"`
-	EndIndex   int    `json:"end_index,omitempty"`
+	StartIndex *int   `json:"start_index,omitempty"`
+	EndIndex   *int   `json:"end_index,omitempty"`
 }
 
 type ResponsesUsage struct {

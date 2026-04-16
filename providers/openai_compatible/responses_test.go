@@ -1316,11 +1316,11 @@ func TestResponsesExtractor_AnnotationSpanFields(t *testing.T) {
 	}
 
 	annotation := annotations[0]
-	if annotation.StartIndex != 10 {
-		t.Errorf("StartIndex = %d, want 10", annotation.StartIndex)
+	if annotation.StartIndex == nil || *annotation.StartIndex != 10 {
+		t.Errorf("StartIndex = %v, want 10", annotation.StartIndex)
 	}
-	if annotation.EndIndex != 25 {
-		t.Errorf("EndIndex = %d, want 25", annotation.EndIndex)
+	if annotation.EndIndex == nil || *annotation.EndIndex != 25 {
+		t.Errorf("EndIndex = %v, want 25", annotation.EndIndex)
 	}
 	if annotation.Type != "url_citation" {
 		t.Errorf("Type = %q, want url_citation", annotation.Type)
@@ -1455,11 +1455,11 @@ func TestResponsesExtractor_RawOutputWithMultipleAnnotations(t *testing.T) {
 		t.Fatalf("Expected 2 annotations, got %d", len(annotations))
 	}
 
-	if annotations[0].StartIndex != 4 || annotations[0].EndIndex != 14 {
-		t.Errorf("First annotation span = [%d, %d], want [4, 14]", annotations[0].StartIndex, annotations[0].EndIndex)
+	if annotations[0].StartIndex == nil || *annotations[0].StartIndex != 4 || annotations[0].EndIndex == nil || *annotations[0].EndIndex != 14 {
+		t.Errorf("First annotation span = [%v, %v], want [4, 14]", annotations[0].StartIndex, annotations[0].EndIndex)
 	}
-	if annotations[1].StartIndex != 19 || annotations[1].EndIndex != 29 {
-		t.Errorf("Second annotation span = [%d, %d], want [19, 29]", annotations[1].StartIndex, annotations[1].EndIndex)
+	if annotations[1].StartIndex == nil || *annotations[1].StartIndex != 19 || annotations[1].EndIndex == nil || *annotations[1].EndIndex != 29 {
+		t.Errorf("Second annotation span = [%v, %v], want [19, 29]", annotations[1].StartIndex, annotations[1].EndIndex)
 	}
 
 	rawOutput := meta.Custom["output_raw"].(json.RawMessage)
@@ -1499,5 +1499,209 @@ func TestResponsesExtractor_NoRawOutputWhenEmpty(t *testing.T) {
 	}
 	if _, ok := meta.Custom["output_raw"]; ok {
 		t.Error("output_raw should not be set when output is empty")
+	}
+}
+
+func TestResponsesExtractor_AnnotationZeroSpanValues(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [
+			{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "Link at start",
+						"annotations": [
+							{
+								"type": "url_citation",
+								"title": "Start Link",
+								"url": "https://example.com",
+								"start_index": 0,
+								"end_index": 4
+							}
+						]
+					}
+				]
+			}
+		],
+		"usage": {"total_tokens": 50}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	output := meta.Custom["output"].([]ResponsesOutputItem)
+	annotation := output[0].Content[0].Annotations[0]
+
+	if annotation.StartIndex == nil {
+		t.Fatal("StartIndex should not be nil for zero value")
+	}
+	if *annotation.StartIndex != 0 {
+		t.Errorf("StartIndex = %d, want 0 (zero value should be preserved)", *annotation.StartIndex)
+	}
+	if annotation.EndIndex == nil {
+		t.Fatal("EndIndex should not be nil")
+	}
+	if *annotation.EndIndex != 4 {
+		t.Errorf("EndIndex = %d, want 4", *annotation.EndIndex)
+	}
+}
+
+func TestResponsesExtractor_BareArrayRawOutputPreservation(t *testing.T) {
+	respBody := `[
+		{
+			"id": "msg_123",
+			"type": "message",
+			"role": "assistant",
+			"content": [
+				{
+					"type": "output_text",
+					"text": "Hello from array",
+					"annotations": [
+						{
+							"type": "url_citation",
+							"title": "Test",
+							"url": "https://example.com",
+							"start_index": 0,
+							"end_index": 5
+						}
+					]
+				}
+			]
+		}
+	]`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	if meta.Choices[0].Message.Content != "Hello from array" {
+		t.Errorf("Content = %v, want 'Hello from array'", meta.Choices[0].Message.Content)
+	}
+
+	rawOutput, ok := meta.Custom["output_raw"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("output_raw should be json.RawMessage for bare array, got %T", meta.Custom["output_raw"])
+	}
+
+	var rawItems []map[string]interface{}
+	if err := json.Unmarshal(rawOutput, &rawItems); err != nil {
+		t.Fatalf("Failed to unmarshal raw output: %v", err)
+	}
+
+	if len(rawItems) != 1 {
+		t.Errorf("Expected 1 item in raw output, got %d", len(rawItems))
+	}
+
+	content := rawItems[0]["content"].([]interface{})
+	annotation := content[0].(map[string]interface{})["annotations"].([]interface{})[0].(map[string]interface{})
+	if annotation["start_index"].(float64) != 0 {
+		t.Errorf("Raw annotation start_index = %v, want 0", annotation["start_index"])
+	}
+}
+
+func TestResponsesExtractor_BareArrayWithLeadingWhitespaceRawOutput(t *testing.T) {
+	respBody := `
+
+  [
+    {
+      "id": "msg_123",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Hello"}
+      ]
+    }
+  ]`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	if _, ok := meta.Custom["output_raw"]; !ok {
+		t.Error("output_raw should be set for bare array with leading whitespace")
+	}
+}
+
+func TestResponsesExtractor_AnnotationMissingSpanFields(t *testing.T) {
+	respBody := `{
+		"id": "resp_test",
+		"object": "response",
+		"model": "gpt-4o",
+		"status": "completed",
+		"output": [
+			{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "A link",
+						"annotations": [
+							{
+								"type": "url_citation",
+								"title": "No Span",
+								"url": "https://example.com"
+							}
+						]
+					}
+				]
+			}
+		],
+		"usage": {"total_tokens": 50}
+	}`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	output := meta.Custom["output"].([]ResponsesOutputItem)
+	annotation := output[0].Content[0].Annotations[0]
+
+	if annotation.StartIndex != nil {
+		t.Errorf("StartIndex should be nil when not provided, got %v", annotation.StartIndex)
+	}
+	if annotation.EndIndex != nil {
+		t.Errorf("EndIndex should be nil when not provided, got %v", annotation.EndIndex)
 	}
 }
