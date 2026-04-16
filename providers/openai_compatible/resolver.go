@@ -2,6 +2,7 @@ package openai_compatible
 
 import (
 	"net/url"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -32,7 +33,7 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 }
 
 func NewResolver(baseURL string) (*Resolver, error) {
-	u, err := url.Parse(baseURL)
+	u, err := url.Parse(normalizeBaseURL(baseURL))
 	if err != nil {
 		return nil, err
 	}
@@ -40,9 +41,20 @@ func NewResolver(baseURL string) (*Resolver, error) {
 }
 
 func NewResolverWithAPIType(baseURL string, apiType llmproxy.APIType) (*Resolver, error) {
-	u, err := url.Parse(baseURL)
+	u, err := url.Parse(normalizeBaseURL(baseURL))
 	if err != nil {
 		return nil, err
 	}
 	return &Resolver{BaseURL: u, APIType: apiType}, nil
+}
+
+// normalizeBaseURL strips a trailing "/v1" or "/v1/" suffix from the base URL
+// so that Resolve and WebSocketURL can unconditionally prepend "/v1/..." without
+// producing double segments like "/v1/v1/responses".
+func normalizeBaseURL(raw string) string {
+	raw = strings.TrimRight(raw, "/")
+	if strings.HasSuffix(raw, "/v1") {
+		raw = raw[:len(raw)-3]
+	}
+	return raw
 }

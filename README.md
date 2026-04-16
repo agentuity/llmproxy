@@ -199,12 +199,14 @@ import (
     "context"
     "log"
     "net/http"
-    "net/url"
 
     "github.com/agentuity/llmproxy"
     "github.com/agentuity/llmproxy/providers/openai"
     "github.com/gorilla/websocket"
 )
+
+// Configure allowed origins for WebSocket upgrades.
+var trustedOrigins = []string{"https://myapp.example.com"}
 
 // Thin adapters — gorilla's *Conn already satisfies llmproxy.WSConn
 
@@ -223,12 +225,26 @@ func (d *gorillaDialer) DialContext(ctx context.Context, urlStr string, h http.H
 }
 
 func main() {
+    // In production, validate the Origin header against trusted origins.
+    // This example allows all origins for brevity.
+    upgrader := websocket.Upgrader{
+        CheckOrigin: func(r *http.Request) bool {
+            origin := r.Header.Get("Origin")
+            for _, allowed := range trustedOrigins {
+                if origin == allowed {
+                    return true
+                }
+            }
+            return false
+        },
+    }
+
     provider, _ := openai.New("sk-your-key")
 
     router := llmproxy.NewAutoRouter(
         llmproxy.WithAutoRouterFallbackProvider(provider),
         llmproxy.WithAutoRouterWebSocket(
-            &gorillaUpgrader{websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}},
+            &gorillaUpgrader{upgrader},
             &gorillaDialer{websocket.Dialer{}},
         ),
         llmproxy.WithAutoRouterWSBillingCallback(func(turn int, meta llmproxy.ResponseMetadata, billing *llmproxy.BillingResult) {

@@ -57,7 +57,22 @@ func TestWebSocketURL_WithExistingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WebSocketURL() error = %v", err)
 	}
-	if got, want := u.String(), "wss://api.openai.com/v1/v1/responses"; got != want {
+	// NewResolver normalizes trailing /v1 so WebSocketURL doesn't double it
+	if got, want := u.String(), "wss://api.openai.com/v1/responses"; got != want {
+		t.Fatalf("URL = %q, want %q", got, want)
+	}
+}
+
+func TestWebSocketURL_WithExistingV1Slash(t *testing.T) {
+	r, err := NewResolver("https://api.openai.com/v1/")
+	if err != nil {
+		t.Fatalf("NewResolver() error = %v", err)
+	}
+	u, err := r.WebSocketURL(llmproxy.BodyMetadata{})
+	if err != nil {
+		t.Fatalf("WebSocketURL() error = %v", err)
+	}
+	if got, want := u.String(), "wss://api.openai.com/v1/responses"; got != want {
 		t.Fatalf("URL = %q, want %q", got, want)
 	}
 }

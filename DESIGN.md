@@ -624,9 +624,15 @@ func (d *GorillaDialer) DialContext(ctx context.Context, urlStr string, h http.H
 ```go
 router := llmproxy.NewAutoRouter(
     llmproxy.WithAutoRouterFallbackProvider(openaiProvider),
+    // In production, configure CheckOrigin to validate against trusted origins.
     llmproxy.WithAutoRouterWebSocket(
         &myadapter.GorillaUpgrader{
-            Upgrader: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
+            Upgrader: websocket.Upgrader{
+                CheckOrigin: func(r *http.Request) bool {
+                    // Validate r.Header.Get("Origin") against a whitelist
+                    return isAllowedOrigin(r)
+                },
+            },
         },
         &myadapter.GorillaDialer{
             Dialer: websocket.Dialer{},
@@ -661,7 +667,7 @@ The OpenAI Responses API WebSocket mode operates at `wss://api.openai.com/v1/res
 
 ### WebSocket Flow
 
-```
+```text
 +------------------+        +------------------+        +------------------+
 |     Client       |        |    AutoRouter    |        |    Upstream      |
 |                  |        |                  |        |   (OpenAI)       |
