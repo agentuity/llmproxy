@@ -18,7 +18,14 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 
 	var responsesResp ResponsesResponse
 	if err := json.Unmarshal(body, &responsesResp); err != nil {
-		if isArray := len(body) > 0 && body[0] == '['; isArray {
+		firstNonWhitespace := -1
+		for i, b := range body {
+			if b != ' ' && b != '\n' && b != '\r' && b != '\t' {
+				firstNonWhitespace = i
+				break
+			}
+		}
+		if firstNonWhitespace >= 0 && body[firstNonWhitespace] == '[' {
 			var outputItems []ResponsesOutputItem
 			if err := json.Unmarshal(body, &outputItems); err != nil {
 				return llmproxy.ResponseMetadata{}, nil, err

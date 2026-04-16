@@ -85,6 +85,9 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	}
 
 	for k, v := range m.Custom {
+		if k == "role" || k == "content" {
+			continue
+		}
 		result[k] = v
 	}
 

@@ -288,6 +288,41 @@ func TestNewMultiAPI(t *testing.T) {
 	}
 }
 
+func TestResponsesExtractor_ArrayWithLeadingWhitespace(t *testing.T) {
+	respBody := `
+
+  [
+    {
+      "id": "msg_123",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Hello"}
+      ]
+    }
+  ]`
+
+	extractor := &ResponsesExtractor{}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(respBody))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	if len(meta.Choices) != 1 {
+		t.Errorf("Choices length = %d, want 1", len(meta.Choices))
+	}
+
+	if meta.Choices[0].Message.Content != "Hello" {
+		t.Errorf("Content = %v, want Hello", meta.Choices[0].Message.Content)
+	}
+}
+
 func TestResponsesExtractor_WebSearchWithAnnotations(t *testing.T) {
 	respBody := `[
   {

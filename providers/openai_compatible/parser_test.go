@@ -620,6 +620,20 @@ func TestParser_ContentAsArrayOfText(t *testing.T) {
 	if len(content) != 2 {
 		t.Errorf("expected 2 content parts, got %d", len(content))
 	}
+	part0 := content[0].(map[string]interface{})
+	if part0["type"] != "text" {
+		t.Errorf("part 0 type = %v, want text", part0["type"])
+	}
+	if part0["text"] != "hello" {
+		t.Errorf("part 0 text = %v, want hello", part0["text"])
+	}
+	part1 := content[1].(map[string]interface{})
+	if part1["type"] != "text" {
+		t.Errorf("part 1 type = %v, want text", part1["type"])
+	}
+	if part1["text"] != "world" {
+		t.Errorf("part 1 text = %v, want world", part1["text"])
+	}
 }
 
 func TestParser_MessageWithNonStandardProperties(t *testing.T) {
@@ -839,5 +853,37 @@ func TestParser_RefusalInMessage(t *testing.T) {
 
 	if meta.Messages[0].Custom["refusal"] != "I cannot assist with that request" {
 		t.Errorf("refusal = %v, want refusal message", meta.Messages[0].Custom["refusal"])
+	}
+}
+
+func TestParser_MessageCustomDoesNotOverrideReservedFields(t *testing.T) {
+	msg := llmproxy.Message{
+		Role:    "user",
+		Content: "hello",
+		Custom: map[string]any{
+			"role":    "assistant",
+			"content": "overridden",
+			"extra":   "value",
+		},
+	}
+
+	remarshaled, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("failed to remarshal: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(remarshaled, &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if result["role"] != "user" {
+		t.Errorf("role = %v, want user (should not be overridden by Custom)", result["role"])
+	}
+	if result["content"] != "hello" {
+		t.Errorf("content = %v, want hello (should not be overridden by Custom)", result["content"])
+	}
+	if result["extra"] != "value" {
+		t.Errorf("extra = %v, want value", result["extra"])
 	}
 }
