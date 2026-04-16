@@ -145,3 +145,86 @@ data: [DONE]
 		t.Errorf("expected cached tokens 80, got %d", cacheUsage.CachedTokens)
 	}
 }
+
+func TestStreamingExtractor_ExtractStreamingWithReasoning(t *testing.T) {
+	streamData := `data: {"id":"chatcmpl-456","model":"o1","choices":[{"index":0,"delta":{"content":"test"}}]}
+
+data: {"id":"chatcmpl-456","model":"o1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":75,"completion_tokens":1186,"total_tokens":1261,"completion_tokens_details":{"reasoning_tokens":1024}}}
+
+data: [DONE]
+
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingExtractor()
+
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Usage.PromptTokens != 75 {
+		t.Errorf("expected prompt tokens 75, got %d", meta.Usage.PromptTokens)
+	}
+	if meta.Usage.CompletionTokens != 1186 {
+		t.Errorf("expected completion tokens 1186, got %d", meta.Usage.CompletionTokens)
+	}
+
+	rt, ok := meta.Custom["reasoning_tokens"].(int)
+	if !ok {
+		t.Fatal("expected reasoning_tokens in custom map")
+	}
+	if rt != 1024 {
+		t.Errorf("expected reasoning tokens 1024, got %d", rt)
+	}
+}
+
+func TestStreamingExtractor_ExtractStreamingWithCacheAndReasoning(t *testing.T) {
+	streamData := `data: {"id":"chatcmpl-789","model":"o1","choices":[{"index":0,"delta":{"content":"test"}}]}
+
+data: {"id":"chatcmpl-789","model":"o1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":500,"total_tokens":600,"prompt_tokens_details":{"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":256}}}
+
+data: [DONE]
+
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingExtractor()
+
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cacheUsage, ok := meta.Custom["cache_usage"].(llmproxy.CacheUsage)
+	if !ok {
+		t.Fatal("expected cache_usage in custom map")
+	}
+	if cacheUsage.CachedTokens != 80 {
+		t.Errorf("expected cached tokens 80, got %d", cacheUsage.CachedTokens)
+	}
+
+	rt, ok := meta.Custom["reasoning_tokens"].(int)
+	if !ok {
+		t.Fatal("expected reasoning_tokens in custom map")
+	}
+	if rt != 256 {
+		t.Errorf("expected reasoning tokens 256, got %d", rt)
+	}
+}

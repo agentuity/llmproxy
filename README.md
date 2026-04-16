@@ -107,7 +107,8 @@ curl -X POST http://localhost:8080/ \
 
 - **9 Provider Implementations**: OpenAI, Anthropic, Groq, Fireworks, x.AI, Google AI, AWS Bedrock, Azure OpenAI, OpenAI-compatible base
 - **AutoRouter**: Single endpoint with automatic provider/API detection
-- **Responses API**: Full support for OpenAI's new Responses API
+- **Responses API**: Full support for OpenAI's Responses API (HTTP streaming and WebSocket mode)
+- **WebSocket Mode**: Persistent connections for multi-turn Responses API workflows with per-turn billing
 - **SSE Streaming**: Full streaming support with efficient token usage extraction
 - **8 Built-in Interceptors**: Logging, Metrics, Retry, Billing, Tracing (OTel), HeaderBan, AddHeader, PromptCaching
 - **Pricing Integration**: models.dev adapter with markup support
@@ -185,11 +186,109 @@ router := llmproxy.NewAutoRouter(
 )
 ```
 
+## WebSocket Mode
+
+The Responses API supports persistent WebSocket connections for multi-turn, tool-call-heavy workflows. WebSocket support is **opt-in** with a zero-dependency adapter pattern — bring your own WebSocket library.
+
+### gorilla/websocket Example
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+
+    "github.com/agentuity/llmproxy"
+    "github.com/agentuity/llmproxy/providers/openai"
+    "github.com/gorilla/websocket"
+)
+
+// Configure allowed origins for WebSocket upgrades.
+var trustedOrigins = []string{"https://myapp.example.com"}
+
+// Thin adapters — gorilla's *Conn already satisfies llmproxy.WSConn
+
+type gorillaUpgrader struct{ websocket.Upgrader }
+
+func (u *gorillaUpgrader) Upgrade(w http.ResponseWriter, r *http.Request, h http.Header) (llmproxy.WSConn, error) {
+    conn, err := u.Upgrader.Upgrade(w, r, h)
+    return conn, err
+}
+
+type gorillaDialer struct{ websocket.Dialer }
+
+func (d *gorillaDialer) DialContext(ctx context.Context, urlStr string, h http.Header) (llmproxy.WSConn, *http.Response, error) {
+    conn, resp, err := d.Dialer.DialContext(ctx, urlStr, h)
+    return conn, resp, err
+}
+
+func main() {
+    // In production, validate the Origin header against trusted origins.
+    // This example allows all origins for brevity.
+    upgrader := websocket.Upgrader{
+        CheckOrigin: func(r *http.Request) bool {
+            origin := r.Header.Get("Origin")
+            for _, allowed := range trustedOrigins {
+                if origin == allowed {
+                    return true
+                }
+            }
+            return false
+        },
+    }
+
+    provider, _ := openai.New("sk-your-key")
+
+    router := llmproxy.NewAutoRouter(
+        llmproxy.WithAutoRouterFallbackProvider(provider),
+        llmproxy.WithAutoRouterWebSocket(
+            &gorillaUpgrader{upgrader},
+            &gorillaDialer{websocket.Dialer{}},
+        ),
+        llmproxy.WithAutoRouterWSBillingCallback(func(turn int, meta llmproxy.ResponseMetadata, billing *llmproxy.BillingResult) {
+            log.Printf("Turn %d: %d prompt + %d completion tokens",
+                turn, meta.Usage.PromptTokens, meta.Usage.CompletionTokens)
+        }),
+    )
+    router.RegisterProvider(provider)
+
+    http.Handle("/", router)
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Clients connect with any WebSocket library:
+
+```python
+from websocket import create_connection
+import json
+
+ws = create_connection("ws://localhost:8080/v1/responses",
+    header=["Authorization: Bearer sk-your-key"])
+
+ws.send(json.dumps({
+    "type": "response.create",
+    "model": "gpt-4o",
+    "input": [{"type": "message", "role": "user",
+               "content": [{"type": "input_text", "text": "Hello!"}]}],
+}))
+
+for msg in ws:
+    event = json.loads(msg)
+    print(event["type"], event.get("delta", ""))
+    if event["type"] == "response.completed":
+        break
+```
+
+The proxy handles model prefix stripping, auth header forwarding, usage extraction, and per-turn billing automatically. See [DESIGN.md](DESIGN.md#websocket-mode) for full protocol details.
+
 ## Providers
 
 | Provider     | Auth                  | API Format                     | Notes |
 | ------------ | --------------------- | ------------------------------ | ----- |
-| OpenAI       | Bearer token          | Chat completions, Responses    | Supports both `/v1/chat/completions` and `/v1/responses` |
+| OpenAI       | Bearer token          | Chat completions, Responses, WebSocket | HTTP + WebSocket for `/v1/responses` |
 | Anthropic    | `x-api-key`           | Messages API                   | |
 | Groq         | Bearer token          | OpenAI-compatible              | |
 | Fireworks    | Bearer token          | OpenAI-compatible              | |

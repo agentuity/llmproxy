@@ -93,6 +93,7 @@ type StreamingUsage struct {
 	CompletionTokens int
 	TotalTokens      int
 	CacheUsage       *CacheUsage
+	ReasoningTokens  int
 }
 
 type OpenAIStreamChunk struct {
@@ -200,6 +201,35 @@ type AnthropicStreamMessage struct {
 	Usage      *AnthropicStreamUsage   `json:"usage,omitempty"`
 }
 
+type ResponsesStreamEvent struct {
+	Type     string          `json:"type"`
+	Response json.RawMessage `json:"response,omitempty"`
+}
+
+type ResponsesStreamResponse struct {
+	ID     string                `json:"id"`
+	Object string                `json:"object"`
+	Model  string                `json:"model"`
+	Status string                `json:"status"`
+	Usage  *ResponsesStreamUsage `json:"usage,omitempty"`
+}
+
+type ResponsesStreamUsage struct {
+	InputTokens         int                           `json:"input_tokens"`
+	OutputTokens        int                           `json:"output_tokens"`
+	TotalTokens         int                           `json:"total_tokens"`
+	InputTokensDetails  *ResponsesStreamInputDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *ResponsesStreamOutputDetails `json:"output_tokens_details,omitempty"`
+}
+
+type ResponsesStreamInputDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type ResponsesStreamOutputDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
 func ParseAnthropicSSEEvent(data []byte) (*AnthropicStreamEvent, error) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -207,6 +237,24 @@ func ParseAnthropicSSEEvent(data []byte) (*AnthropicStreamEvent, error) {
 	}
 
 	var event AnthropicStreamEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+func ParseResponsesSSEEvent(data []byte) (*ResponsesStreamEvent, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	if bytes.Equal(data, []byte("[DONE]")) {
+		return nil, ErrStreamComplete
+	}
+
+	var event ResponsesStreamEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, err
 	}
@@ -233,6 +281,10 @@ func ExtractUsageFromOpenAIChunk(chunk *OpenAIStreamChunk) *StreamingUsage {
 		usage.CacheUsage = &CacheUsage{
 			CachedTokens: chunk.Usage.PromptTokensDetails.CachedTokens,
 		}
+	}
+
+	if chunk.Usage.CompletionTokensDetails != nil && chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+		usage.ReasoningTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
 	}
 
 	return usage
@@ -277,6 +329,39 @@ func ExtractUsageFromAnthropicEvent(event *AnthropicStreamEvent) *StreamingUsage
 	}
 
 	return result
+}
+
+func ExtractUsageFromResponsesEvent(event *ResponsesStreamEvent) *StreamingUsage {
+	if event == nil || event.Type != "response.completed" || len(event.Response) == 0 {
+		return nil
+	}
+
+	var response ResponsesStreamResponse
+	if err := json.Unmarshal(event.Response, &response); err != nil {
+		return nil
+	}
+
+	if response.Usage == nil {
+		return nil
+	}
+
+	usage := &StreamingUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+	}
+
+	if response.Usage.InputTokensDetails != nil && response.Usage.InputTokensDetails.CachedTokens > 0 {
+		usage.CacheUsage = &CacheUsage{
+			CachedTokens: response.Usage.InputTokensDetails.CachedTokens,
+		}
+	}
+
+	if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ReasoningTokens > 0 {
+		usage.ReasoningTokens = response.Usage.OutputTokensDetails.ReasoningTokens
+	}
+
+	return usage
 }
 
 func FormatSSEEvent(event string, data []byte) []byte {

@@ -79,12 +79,14 @@ func (e *MultiAPIExtractor) Extract(resp *http.Response) (llmproxy.ResponseMetad
 type StreamingMultiAPIExtractor struct {
 	*MultiAPIExtractor
 	chatCompletionsStreaming *StreamingExtractor
+	responsesStreaming       *ResponsesStreamingExtractor
 }
 
 func NewStreamingMultiAPIExtractor() *StreamingMultiAPIExtractor {
 	return &StreamingMultiAPIExtractor{
 		MultiAPIExtractor:        NewMultiAPIExtractor(),
 		chatCompletionsStreaming: NewStreamingExtractor(),
+		responsesStreaming:       NewResponsesStreamingExtractor(),
 	}
 }
 
@@ -96,6 +98,14 @@ func (e *StreamingMultiAPIExtractor) ExtractStreamingWithController(resp *http.R
 	if !e.IsStreamingResponse(resp) {
 		return e.extractNonStreamingWithController(resp, w, rc)
 	}
+
+	if resp.Request != nil {
+		metaCtx := llmproxy.GetMetaFromContext(resp.Request.Context())
+		if apiType, ok := metaCtx.Meta.Custom["api_type"].(llmproxy.APIType); ok && apiType == llmproxy.APITypeResponses {
+			return e.responsesStreaming.ExtractStreamingWithController(resp, w, rc)
+		}
+	}
+
 	return e.chatCompletionsStreaming.ExtractStreamingWithController(resp, w, rc)
 }
 

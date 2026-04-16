@@ -173,6 +173,9 @@ func (e *StreamingExtractor) extractStreamingWithController(resp *http.Response,
 		if accumulatedUsage.CacheUsage != nil {
 			meta.Custom["cache_usage"] = *accumulatedUsage.CacheUsage
 		}
+		if accumulatedUsage.ReasoningTokens > 0 {
+			meta.Custom["reasoning_tokens"] = accumulatedUsage.ReasoningTokens
+		}
 	} else if lastChunk != nil {
 		for _, choice := range lastChunk.Choices {
 			c := llmproxy.Choice{

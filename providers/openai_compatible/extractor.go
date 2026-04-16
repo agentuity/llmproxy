@@ -52,6 +52,10 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		}
 	}
 
+	if openaiResp.Usage.CompletionTokensDetails != nil && openaiResp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+		meta.Custom["reasoning_tokens"] = openaiResp.Usage.CompletionTokensDetails.ReasoningTokens
+	}
+
 	for i, c := range openaiResp.Choices {
 		meta.Choices[i] = llmproxy.Choice{
 			Index:        c.Index,

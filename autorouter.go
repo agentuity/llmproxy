@@ -19,6 +19,9 @@ type AutoRouter struct {
 	client              *http.Client
 	fallbackProvider    Provider
 	billingCalculator   *BillingCalculator
+	wsUpgrader          WSUpgrader
+	wsDialer            WSDialer
+	wsBillingCallback   WSBillingCallback
 }
 
 type AutoRouterOption func(*AutoRouter)
@@ -49,6 +52,17 @@ func WithAutoRouterModelProviderLookup(lookup ModelProviderLookup) AutoRouterOpt
 
 func WithAutoRouterBillingCalculator(calculator *BillingCalculator) AutoRouterOption {
 	return func(a *AutoRouter) { a.billingCalculator = calculator }
+}
+
+func WithAutoRouterWebSocket(upgrader WSUpgrader, dialer WSDialer) AutoRouterOption {
+	return func(a *AutoRouter) {
+		a.wsUpgrader = upgrader
+		a.wsDialer = dialer
+	}
+}
+
+func WithAutoRouterWSBillingCallback(cb WSBillingCallback) AutoRouterOption {
+	return func(a *AutoRouter) { a.wsBillingCallback = cb }
 }
 
 func NewAutoRouter(opts ...AutoRouterOption) *AutoRouter {
@@ -233,6 +247,11 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		}
 	}
 
+	apiType := DetectAPITypeFromPath(req.URL.Path)
+	if apiType == "" {
+		apiType = DetectAPITypeFromBodyAndProvider(body, providerName)
+	}
+
 	if raw != nil {
 		if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
 			raw["model"] = strippedModel
@@ -240,7 +259,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		}
 		if a.billingCalculator != nil {
 			if stream, ok := raw["stream"].(bool); ok && stream {
-				if !nativeStreamUsageProviders[providerName] {
+				if !nativeStreamUsageProviders[providerName] && apiType != APITypeResponses {
 					// Merge include_usage into existing stream_options if present
 					streamOpts, ok := raw["stream_options"].(map[string]any)
 					if !ok {
@@ -256,11 +275,6 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		if err != nil {
 			return ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
 		}
-	}
-
-	apiType := DetectAPITypeFromPath(req.URL.Path)
-	if apiType == "" {
-		apiType = DetectAPITypeFromBodyAndProvider(body, providerName)
 	}
 
 	meta, _, err := provider.BodyParser().Parse(io.NopCloser(bytes.NewReader(body)))
@@ -410,6 +424,15 @@ func (a *AutoRouter) streamResponseWithFlush(r io.Reader, w http.ResponseWriter,
 }
 
 func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if isWebSocketUpgrade(r) && a.wsUpgrader != nil && a.wsDialer != nil {
+		if err := a.ForwardWebSocket(r.Context(), w, r); err != nil {
+			if !headerSent(w) {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+		return
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -484,6 +507,12 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = rc.Flush()
 	}
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
+	return strings.Contains(connection, "upgrade") && strings.Contains(upgrade, "websocket")
 }
 
 func headerSent(w http.ResponseWriter) bool {

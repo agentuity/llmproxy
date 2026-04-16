@@ -58,6 +58,10 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 		}
 	}
 
+	if responsesResp.Usage.OutputTokensDetails != nil && responsesResp.Usage.OutputTokensDetails.ReasoningTokens > 0 {
+		meta.Custom["reasoning_tokens"] = responsesResp.Usage.OutputTokensDetails.ReasoningTokens
+	}
+
 	if len(responsesResp.Output) > 0 {
 		content := extractResponsesContent(responsesResp.Output)
 		meta.Choices = []llmproxy.Choice{

@@ -2,9 +2,12 @@ package openai_compatible
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/agentuity/llmproxy"
@@ -1043,6 +1046,14 @@ func TestResponsesExtractor_ReasoningTokensInUsage(t *testing.T) {
 		t.Errorf("CompletionTokens = %d, want 200", meta.Usage.CompletionTokens)
 	}
 
+	rt, ok := meta.Custom["reasoning_tokens"].(int)
+	if !ok {
+		t.Fatal("expected reasoning_tokens in custom metadata")
+	}
+	if rt != 150 {
+		t.Errorf("reasoning_tokens = %d, want 150", rt)
+	}
+
 	output := meta.Custom["output"].([]ResponsesOutputItem)
 	if output[0].Type != "reasoning" {
 		t.Errorf("First output should be reasoning, got %q", output[0].Type)
@@ -1703,5 +1714,112 @@ func TestResponsesExtractor_AnnotationMissingSpanFields(t *testing.T) {
 	}
 	if annotation.EndIndex != nil {
 		t.Errorf("EndIndex should be nil when not provided, got %v", annotation.EndIndex)
+	}
+}
+
+func TestStreamingMultiAPIExtractor_ResponsesAPIDispatch(t *testing.T) {
+	stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_dispatch\",\"model\":\"gpt-4o\"}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_dispatch\",\"model\":\"gpt-4o\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n" +
+		"data: [DONE]\n\n"
+
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	ctxValue := llmproxy.MetaContextValue{
+		Meta: llmproxy.BodyMetadata{Custom: map[string]any{"api_type": llmproxy.APITypeResponses}},
+	}
+	req = req.WithContext(context.WithValue(req.Context(), llmproxy.MetaContextKey{}, ctxValue))
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Request:    req,
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingMultiAPIExtractor()
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("ExtractStreamingWithController() error = %v", err)
+	}
+
+	if meta.ID != "resp_dispatch" {
+		t.Errorf("ID = %q, want resp_dispatch", meta.ID)
+	}
+	if meta.Usage.TotalTokens != 15 {
+		t.Errorf("TotalTokens = %d, want 15", meta.Usage.TotalTokens)
+	}
+	if meta.Custom["api_type"] != llmproxy.APITypeResponses {
+		t.Errorf("api_type = %v, want responses", meta.Custom["api_type"])
+	}
+}
+
+func TestStreamingMultiAPIExtractor_ChatCompletionsDispatch(t *testing.T) {
+	stream := "data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"total_tokens\":12}}\n\n" +
+		"data: [DONE]\n\n"
+
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	ctxValue := llmproxy.MetaContextValue{
+		Meta: llmproxy.BodyMetadata{Custom: map[string]any{"api_type": llmproxy.APITypeChatCompletions}},
+	}
+	req = req.WithContext(context.WithValue(req.Context(), llmproxy.MetaContextKey{}, ctxValue))
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Request:    req,
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingMultiAPIExtractor()
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("ExtractStreamingWithController() error = %v", err)
+	}
+
+	if meta.ID != "chatcmpl_1" {
+		t.Errorf("ID = %q, want chatcmpl_1", meta.ID)
+	}
+	if meta.Usage.TotalTokens != 12 {
+		t.Errorf("TotalTokens = %d, want 12", meta.Usage.TotalTokens)
+	}
+}
+
+func TestStreamingMultiAPIExtractor_NoContextFallback(t *testing.T) {
+	stream := "data: {\"id\":\"chatcmpl_fallback\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl_fallback\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6}}\n\n" +
+		"data: [DONE]\n\n"
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingMultiAPIExtractor()
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("ExtractStreamingWithController() error = %v", err)
+	}
+
+	if meta.ID != "chatcmpl_fallback" {
+		t.Errorf("ID = %q, want chatcmpl_fallback", meta.ID)
+	}
+	if meta.Usage.TotalTokens != 6 {
+		t.Errorf("TotalTokens = %d, want 6", meta.Usage.TotalTokens)
 	}
 }
