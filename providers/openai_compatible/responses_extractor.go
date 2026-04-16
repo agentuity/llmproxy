@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -92,15 +93,7 @@ func extractResponsesContent(output []ResponsesOutputItem) string {
 	if len(texts) == 0 {
 		return ""
 	}
-	if len(texts) == 1 {
-		return texts[0]
-	}
-	// Join multiple text segments with newline
-	result := texts[0]
-	for _, t := range texts[1:] {
-		result += "\n" + t
-	}
-	return result
+	return strings.Join(texts, "\n")
 }
 
 type ResponsesResponse struct {
