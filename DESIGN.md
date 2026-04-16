@@ -471,7 +471,7 @@ data: {"id":"...","usage":{"prompt_tokens":100,"completion_tokens":50,"total_tok
 data: [DONE]
 ```
 
-**OpenAI Responses API**: Usage is in the `response.completed` event. The `MultiAPIExtractor` automatically detects the API type from the request context and dispatches to the correct streaming extractor:
+**OpenAI Responses API**: Usage is in the `response.completed` event. The `StreamingMultiAPIExtractor` automatically detects the API type from the request context and dispatches to the correct streaming extractor:
 
 ```json
 data: {"type":"response.created","response":{"id":"resp_123","model":"gpt-4o"}}
@@ -493,7 +493,7 @@ data: {"type":"message_stop"}
 
 ### Auto stream_options Injection
 
-When `BillingCalculator` is configured and the request has `stream: true`, the proxy automatically injects:
+When `BillingCalculator` is configured and the request has `stream: true`, the proxy automatically injects `stream_options.include_usage` for **OpenAI-compatible Chat Completions** endpoints only:
 
 ```json
 {
@@ -502,7 +502,13 @@ When `BillingCalculator` is configured and the request has `stream: true`, the p
 }
 ```
 
-This ensures OpenAI returns token usage in the streaming response for billing calculation.
+This ensures providers return token usage in their streaming responses for billing calculation.
+
+The following are **excluded** from this injection because they already include usage natively:
+
+- **Responses API** — usage is always present in the `response.completed` event
+- **Anthropic** — usage is sent in `message_start` and `message_delta` events
+- **Bedrock** and **Google AI** — usage is included in their streaming event formats
 
 ### Efficient Flushing
 
