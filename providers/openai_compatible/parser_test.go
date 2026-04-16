@@ -2,6 +2,7 @@ package openai_compatible
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func TestParser_BasicRequest(t *testing.T) {
 		t.Errorf("message role = %q, want %q", meta.Messages[0].Role, "user")
 	}
 	if meta.Messages[0].Content != "hello" {
-		t.Errorf("message content = %q, want %q", meta.Messages[0].Content, "hello")
+		t.Errorf("message content = %v, want %q", meta.Messages[0].Content, "hello")
 	}
 	if string(raw) != body {
 		t.Errorf("raw body mismatch")
@@ -132,7 +133,7 @@ func TestParser_MultilineContent(t *testing.T) {
 	}
 
 	if meta.Messages[0].Content != "line1\nline2\nline3" {
-		t.Errorf("multiline content not preserved: %q", meta.Messages[0].Content)
+		t.Errorf("multiline content not preserved: %v", meta.Messages[0].Content)
 	}
 }
 
@@ -146,7 +147,7 @@ func TestParser_UnicodeContent(t *testing.T) {
 	}
 
 	if meta.Messages[0].Content != "Hello 世界 🌍" {
-		t.Errorf("unicode content not preserved: %q", meta.Messages[0].Content)
+		t.Errorf("unicode content not preserved: %v", meta.Messages[0].Content)
 	}
 }
 
@@ -232,7 +233,7 @@ func TestExtractor_BasicResponse(t *testing.T) {
 		t.Errorf("Choice message role = %q, want assistant", meta.Choices[0].Message.Role)
 	}
 	if meta.Choices[0].Message.Content != "Hello!" {
-		t.Errorf("Choice message content = %q, want Hello!", meta.Choices[0].Message.Content)
+		t.Errorf("Choice message content = %v, want Hello!", meta.Choices[0].Message.Content)
 	}
 	if meta.Choices[0].FinishReason != "stop" {
 		t.Errorf("FinishReason = %q, want stop", meta.Choices[0].FinishReason)
@@ -261,10 +262,10 @@ func TestExtractor_MultipleChoices(t *testing.T) {
 		t.Fatalf("Choices count = %d, want 2", len(meta.Choices))
 	}
 	if meta.Choices[0].Message.Content != "Option A" {
-		t.Errorf("Choice 0 content = %q, want Option A", meta.Choices[0].Message.Content)
+		t.Errorf("Choice 0 content = %v, want Option A", meta.Choices[0].Message.Content)
 	}
 	if meta.Choices[1].Message.Content != "Option B" {
-		t.Errorf("Choice 1 content = %q, want Option B", meta.Choices[1].Message.Content)
+		t.Errorf("Choice 1 content = %v, want Option B", meta.Choices[1].Message.Content)
 	}
 }
 
@@ -290,7 +291,7 @@ func TestExtractor_DeltaForStreaming(t *testing.T) {
 		t.Errorf("Delta role = %q, want assistant", meta.Choices[0].Delta.Role)
 	}
 	if meta.Choices[0].Delta.Content != "Hello" {
-		t.Errorf("Delta content = %q, want Hello", meta.Choices[0].Delta.Content)
+		t.Errorf("Delta content = %v, want Hello", meta.Choices[0].Delta.Content)
 	}
 }
 
@@ -555,5 +556,288 @@ func TestExtractor_ZeroCachedTokens(t *testing.T) {
 
 	if _, ok := meta.Custom["cache_usage"]; ok {
 		t.Error("expected no cache_usage when cached_tokens is 0")
+	}
+}
+
+func TestParser_ContentAsString(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello world"}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Content != "hello world" {
+		t.Errorf("content = %v, want 'hello world'", meta.Messages[0].Content)
+	}
+}
+
+func TestParser_ContentAsArray(t *testing.T) {
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"What's in this image?"},{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, ok := meta.Messages[0].Content.([]interface{})
+	if !ok {
+		t.Fatalf("expected content to be array, got %T", meta.Messages[0].Content)
+	}
+	if len(content) != 2 {
+		t.Errorf("expected 2 content parts, got %d", len(content))
+	}
+
+	textPart := content[0].(map[string]interface{})
+	if textPart["type"] != "text" {
+		t.Errorf("expected first part type 'text', got %v", textPart["type"])
+	}
+	if textPart["text"] != "What's in this image?" {
+		t.Errorf("expected text content, got %v", textPart["text"])
+	}
+
+	imagePart := content[1].(map[string]interface{})
+	if imagePart["type"] != "image_url" {
+		t.Errorf("expected second part type 'image_url', got %v", imagePart["type"])
+	}
+}
+
+func TestParser_ContentAsArrayOfText(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, ok := meta.Messages[0].Content.([]interface{})
+	if !ok {
+		t.Fatalf("expected content to be array, got %T", meta.Messages[0].Content)
+	}
+	if len(content) != 2 {
+		t.Errorf("expected 2 content parts, got %d", len(content))
+	}
+}
+
+func TestParser_MessageWithNonStandardProperties(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello","name":"john","custom_field":"value","nested":{"foo":"bar"}}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Role != "user" {
+		t.Errorf("role = %q, want user", meta.Messages[0].Role)
+	}
+	if meta.Messages[0].Content != "hello" {
+		t.Errorf("content = %v, want hello", meta.Messages[0].Content)
+	}
+	if meta.Messages[0].Custom["name"] != "john" {
+		t.Errorf("custom name = %v, want john", meta.Messages[0].Custom["name"])
+	}
+	if meta.Messages[0].Custom["custom_field"] != "value" {
+		t.Errorf("custom_field = %v, want value", meta.Messages[0].Custom["custom_field"])
+	}
+	if meta.Messages[0].Custom["nested"] == nil {
+		t.Error("expected nested field in Custom")
+	}
+	nested := meta.Messages[0].Custom["nested"].(map[string]interface{})
+	if nested["foo"] != "bar" {
+		t.Errorf("nested.foo = %v, want bar", nested["foo"])
+	}
+}
+
+func TestParser_MessageWithToolCalls(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Role != "assistant" {
+		t.Errorf("role = %q, want assistant", meta.Messages[0].Role)
+	}
+	if meta.Messages[0].Content != nil {
+		t.Errorf("content = %v, want nil", meta.Messages[0].Content)
+	}
+	if meta.Messages[0].Custom["tool_calls"] == nil {
+		t.Error("expected tool_calls in Custom")
+	}
+	toolCalls := meta.Messages[0].Custom["tool_calls"].([]interface{})
+	if len(toolCalls) != 1 {
+		t.Errorf("expected 1 tool_call, got %d", len(toolCalls))
+	}
+}
+
+func TestParser_MessageWithToolCallId(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"tool","content":"sunny","tool_call_id":"call_123"}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Role != "tool" {
+		t.Errorf("role = %q, want tool", meta.Messages[0].Role)
+	}
+	if meta.Messages[0].Content != "sunny" {
+		t.Errorf("content = %v, want sunny", meta.Messages[0].Content)
+	}
+	if meta.Messages[0].Custom["tool_call_id"] != "call_123" {
+		t.Errorf("tool_call_id = %v, want call_123", meta.Messages[0].Custom["tool_call_id"])
+	}
+}
+
+func TestParser_MessageWithFunctionCall(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Custom["function_call"] == nil {
+		t.Error("expected function_call in Custom")
+	}
+	fnCall := meta.Messages[0].Custom["function_call"].(map[string]interface{})
+	if fnCall["name"] != "get_weather" {
+		t.Errorf("function_call.name = %v, want get_weather", fnCall["name"])
+	}
+}
+
+func TestParser_MultipleMessagesWithMixedContent(t *testing.T) {
+	body := `{"model":"gpt-4o","messages":[
+		{"role":"system","content":"You are helpful"},
+		{"role":"user","content":"hello"},
+		{"role":"assistant","content":"hi there"},
+		{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc123"}}]}
+	]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(meta.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(meta.Messages))
+	}
+
+	if meta.Messages[0].Content != "You are helpful" {
+		t.Errorf("message 0 content = %v, want 'You are helpful'", meta.Messages[0].Content)
+	}
+	if meta.Messages[1].Content != "hello" {
+		t.Errorf("message 1 content = %v, want 'hello'", meta.Messages[1].Content)
+	}
+	if meta.Messages[2].Content != "hi there" {
+		t.Errorf("message 2 content = %v, want 'hi there'", meta.Messages[2].Content)
+	}
+
+	content3, ok := meta.Messages[3].Content.([]interface{})
+	if !ok {
+		t.Fatalf("message 3 content should be array, got %T", meta.Messages[3].Content)
+	}
+	if len(content3) != 2 {
+		t.Errorf("message 3 should have 2 parts, got %d", len(content3))
+	}
+}
+
+func TestParser_MessageRoundTrip(t *testing.T) {
+	original := `{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"https://example.com/img.png","detail":"high"}}],"custom_prop":"value"}]}`
+
+	parser := &Parser{}
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(original))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	remarshaled, err := json.Marshal(meta.Messages[0])
+	if err != nil {
+		t.Fatalf("failed to remarshal message: %v", err)
+	}
+
+	var remarshaledMsg map[string]interface{}
+	if err := json.Unmarshal(remarshaled, &remarshaledMsg); err != nil {
+		t.Fatalf("failed to unmarshal remarshaled message: %v", err)
+	}
+
+	if remarshaledMsg["role"] != "user" {
+		t.Errorf("role = %v, want user", remarshaledMsg["role"])
+	}
+	if remarshaledMsg["custom_prop"] != "value" {
+		t.Errorf("custom_prop = %v, want value", remarshaledMsg["custom_prop"])
+	}
+
+	content, ok := remarshaledMsg["content"].([]interface{})
+	if !ok {
+		t.Fatalf("content should be array, got %T", remarshaledMsg["content"])
+	}
+	if len(content) != 2 {
+		t.Errorf("expected 2 content parts, got %d", len(content))
+	}
+}
+
+func TestParser_ContentAsNull(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"assistant","content":null}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Content != nil {
+		t.Errorf("content = %v, want nil", meta.Messages[0].Content)
+	}
+}
+
+func TestParser_ContentAsNumber(t *testing.T) {
+	body := `{"model":"test","messages":[{"role":"user","content":123}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Content != 123.0 {
+		t.Errorf("content = %v, want 123", meta.Messages[0].Content)
+	}
+}
+
+func TestParser_ContentAsBoolean(t *testing.T) {
+	body := `{"model":"test","messages":[{"role":"user","content":true}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Content != true {
+		t.Errorf("content = %v, want true", meta.Messages[0].Content)
+	}
+}
+
+func TestParser_RefusalInMessage(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"assistant","content":"I cannot help","refusal":"I cannot assist with that request"}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Messages[0].Custom["refusal"] != "I cannot assist with that request" {
+		t.Errorf("refusal = %v, want refusal message", meta.Messages[0].Custom["refusal"])
 	}
 }

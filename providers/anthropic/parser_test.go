@@ -57,7 +57,7 @@ func TestParser(t *testing.T) {
 			t.Errorf("expected 1 message, got %d", len(meta.Messages))
 		}
 		if meta.Messages[0].Content != "hello" {
-			t.Errorf("expected content 'hello', got %s", meta.Messages[0].Content)
+			t.Errorf("expected content 'hello', got %v", meta.Messages[0].Content)
 		}
 	})
 
@@ -148,7 +148,7 @@ func TestExtractor(t *testing.T) {
 			t.Errorf("expected 1 choice, got %d", len(meta.Choices))
 		}
 		if meta.Choices[0].Message.Content != "Hello!" {
-			t.Errorf("expected content 'Hello!', got %s", meta.Choices[0].Message.Content)
+			t.Errorf("expected content 'Hello!', got %v", meta.Choices[0].Message.Content)
 		}
 		if string(raw) != respBody {
 			t.Error("raw body mismatch")
@@ -200,4 +200,20 @@ func TestExtractor(t *testing.T) {
 			t.Error("expected no cache_usage in Custom map when not present in response")
 		}
 	})
+}
+
+func TestParser_ContentArrayWithMultipleTypes(t *testing.T) {
+	body := `{"model":"claude-3-opus-20240229","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc123"}}]}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(meta.Messages) != 1 {
+		t.Errorf("expected 1 message, got %d", len(meta.Messages))
+	}
+	if meta.Messages[0].Content != "hello" {
+		t.Errorf("expected content 'hello', got %v", meta.Messages[0].Content)
+	}
 }

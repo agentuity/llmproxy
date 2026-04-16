@@ -22,12 +22,73 @@
 //	resp, meta, _ := proxy.Forward(ctx, req)
 package llmproxy
 
+import "encoding/json"
+
 // Message represents a single message in a chat completion request.
 type Message struct {
 	// Role is the role of the message author (e.g., "user", "assistant", "system").
 	Role string `json:"role"`
-	// Content is the text content of the message.
-	Content string `json:"content"`
+	// Content is the content of the message (can be string or array for multimodal).
+	Content any `json:"content"`
+	// Custom holds provider-specific message fields that don't map to standard fields.
+	Custom map[string]any `json:"-"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to capture unknown fields.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type Alias Message
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	m.Custom = make(map[string]any)
+	for k, v := range raw {
+		if k != "role" && k != "content" {
+			m.Custom[k] = v
+		}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements custom JSON marshaling to include Custom fields.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type Alias Message
+	aux := &struct {
+		Alias
+	}{
+		Alias: (Alias)(m),
+	}
+
+	data, err := json.Marshal(aux)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(m.Custom) == 0 {
+		return data, nil
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	for k, v := range m.Custom {
+		result[k] = v
+	}
+
+	return json.Marshal(result)
 }
 
 // BodyMetadata contains extracted metadata from a parsed request body.

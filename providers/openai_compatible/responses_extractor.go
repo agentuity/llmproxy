@@ -18,7 +18,16 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 
 	var responsesResp ResponsesResponse
 	if err := json.Unmarshal(body, &responsesResp); err != nil {
-		return llmproxy.ResponseMetadata{}, nil, err
+		if isArray := len(body) > 0 && body[0] == '['; isArray {
+			var outputItems []ResponsesOutputItem
+			if err := json.Unmarshal(body, &outputItems); err != nil {
+				return llmproxy.ResponseMetadata{}, nil, err
+			}
+			responsesResp.Output = outputItems
+			responsesResp.Status = "completed"
+		} else {
+			return llmproxy.ResponseMetadata{}, nil, err
+		}
 	}
 
 	meta := llmproxy.ResponseMetadata{
@@ -54,6 +63,9 @@ func (e *ResponsesExtractor) Extract(resp *http.Response) (llmproxy.ResponseMeta
 	meta.Custom["api_type"] = llmproxy.APITypeResponses
 	if responsesResp.Error != nil {
 		meta.Custom["error"] = responsesResp.Error
+	}
+	if len(responsesResp.Output) > 0 {
+		meta.Custom["output"] = responsesResp.Output
 	}
 
 	return meta, body, nil
@@ -96,16 +108,33 @@ type ResponsesResponse struct {
 }
 
 type ResponsesOutputItem struct {
-	ID      string                   `json:"id"`
-	Type    string                   `json:"type"`
-	Status  string                   `json:"status"`
-	Role    string                   `json:"role,omitempty"`
-	Content []ResponsesOutputContent `json:"content,omitempty"`
+	ID        string                   `json:"id"`
+	Type      string                   `json:"type"`
+	Status    string                   `json:"status"`
+	Role      string                   `json:"role,omitempty"`
+	Content   []ResponsesOutputContent `json:"content,omitempty"`
+	Name      string                   `json:"name,omitempty"`
+	Arguments string                   `json:"arguments,omitempty"`
+	Summary   []ResponsesOutputSummary `json:"summary,omitempty"`
+}
+
+type ResponsesOutputSummary struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 type ResponsesOutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type        string                      `json:"type"`
+	Text        string                      `json:"text,omitempty"`
+	Annotations []ResponsesOutputAnnotation `json:"annotations,omitempty"`
+	Logprobs    interface{}                 `json:"logprobs,omitempty"`
+}
+
+type ResponsesOutputAnnotation struct {
+	Type  string `json:"type"`
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Index *int   `json:"index,omitempty"`
 }
 
 type ResponsesUsage struct {

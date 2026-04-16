@@ -252,7 +252,11 @@ func processBedrockStreamEvent(event *eventStreamEvent, meta *llmproxy.ResponseM
 				})
 			}
 			if meta.Choices[0].Message != nil {
-				meta.Choices[0].Message.Content += delta.Delta.Text
+				if str, ok := meta.Choices[0].Message.Content.(string); ok {
+					meta.Choices[0].Message.Content = str + delta.Delta.Text
+				} else {
+					meta.Choices[0].Message.Content = delta.Delta.Text
+				}
 			}
 		}
 

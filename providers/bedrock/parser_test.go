@@ -32,7 +32,7 @@ func TestParser(t *testing.T) {
 			t.Errorf("expected role user, got %s", meta.Messages[0].Role)
 		}
 		if meta.Messages[0].Content != "hello" {
-			t.Errorf("expected content 'hello', got %s", meta.Messages[0].Content)
+			t.Errorf("expected content 'hello', got %v", meta.Messages[0].Content)
 		}
 		if string(raw) != body {
 			t.Error("raw body mismatch")
@@ -181,7 +181,7 @@ func TestExtractor(t *testing.T) {
 			t.Errorf("expected 1 choice, got %d", len(meta.Choices))
 		}
 		if meta.Choices[0].Message.Content != "Hello!" {
-			t.Errorf("expected content 'Hello!', got %s", meta.Choices[0].Message.Content)
+			t.Errorf("expected content 'Hello!', got %v", meta.Choices[0].Message.Content)
 		}
 		if meta.Choices[0].FinishReason != "end_turn" {
 			t.Errorf("expected finish_reason end_turn, got %s", meta.Choices[0].FinishReason)
@@ -190,4 +190,17 @@ func TestExtractor(t *testing.T) {
 			t.Error("raw body mismatch")
 		}
 	})
+}
+
+func TestParser_MessageWithMultipleContentBlocks(t *testing.T) {
+	body := `{"modelId":"anthropic.claude-3-sonnet-20240229-v1:0","messages":[{"role":"user","content":[{"text":"hello"},{"text":"world"}]}]}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Messages[0].Content != "helloworld" {
+		t.Errorf("expected combined content 'helloworld', got %v", meta.Messages[0].Content)
+	}
 }
