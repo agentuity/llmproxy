@@ -10,8 +10,11 @@
 package openai
 
 import (
+	"github.com/agentuity/llmproxy"
 	"github.com/agentuity/llmproxy/providers/openai_compatible"
 )
+
+var _ llmproxy.WebSocketCapableProvider = (*openai_compatible.Provider)(nil)
 
 // New creates a new OpenAI provider with the given API key.
 // The provider is configured to use OpenAI's API endpoint (https://api.openai.com).

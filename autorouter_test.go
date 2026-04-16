@@ -735,3 +735,88 @@ func TestAutoRouter_AnthropicStreamingNoStreamOptions(t *testing.T) {
 		t.Error("stream_options should NOT be injected for Anthropic (always sends usage in events)")
 	}
 }
+
+func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("event: response.completed\ndata: {\"id\":\"resp_test\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4o", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				io.Copy(w, resp.Body)
+				rc.Flush()
+				return ResponseMetadata{ID: "resp_test"}, nil
+			},
+		},
+	}
+	provider.mockProvider.extractFn = func(resp *http.Response) (ResponseMetadata, []byte, error) {
+		body, _ := io.ReadAll(resp.Body)
+		return ResponseMetadata{ID: "resp_test"}, body, nil
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	t.Run("path-based detection", func(t *testing.T) {
+		receivedBody = nil
+		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("StatusCode = %d, want 200", w.Code)
+		}
+
+		if _, ok := receivedBody["stream_options"]; ok {
+			t.Error("stream_options should NOT be injected for Responses API requests")
+		}
+	})
+
+	t.Run("body-based detection", func(t *testing.T) {
+		receivedBody = nil
+		req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("StatusCode = %d, want 200", w.Code)
+		}
+
+		if _, ok := receivedBody["stream_options"]; ok {
+			t.Error("stream_options should NOT be injected for Responses API requests (body-detected)")
+		}
+	})
+}

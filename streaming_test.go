@@ -214,6 +214,50 @@ func TestExtractUsageFromOpenAIChunk(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "chunk with reasoning tokens",
+			chunk: &OpenAIStreamChunk{
+				Usage: &OpenAIStreamUsage{
+					PromptTokens:     75,
+					CompletionTokens: 1186,
+					TotalTokens:      1261,
+					CompletionTokensDetails: &OpenAIStreamCompletionDetails{
+						ReasoningTokens: 1024,
+					},
+				},
+			},
+			expected: &StreamingUsage{
+				PromptTokens:     75,
+				CompletionTokens: 1186,
+				TotalTokens:      1261,
+				ReasoningTokens:  1024,
+			},
+		},
+		{
+			name: "chunk with both cache and reasoning tokens",
+			chunk: &OpenAIStreamChunk{
+				Usage: &OpenAIStreamUsage{
+					PromptTokens:     100,
+					CompletionTokens: 200,
+					TotalTokens:      300,
+					PromptTokensDetails: &OpenAIStreamPromptDetails{
+						CachedTokens: 50,
+					},
+					CompletionTokensDetails: &OpenAIStreamCompletionDetails{
+						ReasoningTokens: 128,
+					},
+				},
+			},
+			expected: &StreamingUsage{
+				PromptTokens:     100,
+				CompletionTokens: 200,
+				TotalTokens:      300,
+				CacheUsage: &CacheUsage{
+					CachedTokens: 50,
+				},
+				ReasoningTokens: 128,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -247,6 +291,10 @@ func TestExtractUsageFromOpenAIChunk(t *testing.T) {
 				} else if result.CacheUsage.CachedTokens != tt.expected.CacheUsage.CachedTokens {
 					t.Errorf("expected CachedTokens %d, got %d", tt.expected.CacheUsage.CachedTokens, result.CacheUsage.CachedTokens)
 				}
+			}
+
+			if result.ReasoningTokens != tt.expected.ReasoningTokens {
+				t.Errorf("expected ReasoningTokens %d, got %d", tt.expected.ReasoningTokens, result.ReasoningTokens)
 			}
 		})
 	}
@@ -557,5 +605,204 @@ data: {"type":"message_stop"}
 	}
 	if deltaEvent.Usage.OutputTokens != 25 {
 		t.Errorf("expected 25 output tokens, got %d", deltaEvent.Usage.OutputTokens)
+	}
+}
+
+func TestParseResponsesSSEEvent_Created(t *testing.T) {
+	data := []byte(`{"type":"response.created","response":{"id":"resp_123","object":"response","model":"gpt-4o","status":"in_progress"}}`)
+
+	event, err := ParseResponsesSSEEvent(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if event.Type != "response.created" {
+		t.Errorf("Type = %q, want response.created", event.Type)
+	}
+	if len(event.Response) == 0 {
+		t.Fatal("expected response payload")
+	}
+}
+
+func TestParseResponsesSSEEvent_TextDelta(t *testing.T) {
+	data := []byte(`{"type":"response.output_text.delta","delta":"Hello","content_index":0,"output_index":0}`)
+
+	event, err := ParseResponsesSSEEvent(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if event.Type != "response.output_text.delta" {
+		t.Errorf("Type = %q, want response.output_text.delta", event.Type)
+	}
+}
+
+func TestParseResponsesSSEEvent_Completed(t *testing.T) {
+	data := []byte(`{"type":"response.completed","response":{"id":"resp_123","model":"gpt-4o","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`)
+
+	event, err := ParseResponsesSSEEvent(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if event.Type != "response.completed" {
+		t.Errorf("Type = %q, want response.completed", event.Type)
+	}
+}
+
+func TestParseResponsesSSEEvent_Empty(t *testing.T) {
+	event, err := ParseResponsesSSEEvent([]byte("  \n\t  "))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("expected nil event, got %+v", event)
+	}
+}
+
+func TestParseResponsesSSEEvent_Done(t *testing.T) {
+	event, err := ParseResponsesSSEEvent([]byte("[DONE]"))
+	if err != ErrStreamComplete {
+		t.Fatalf("expected ErrStreamComplete, got %v", err)
+	}
+	if event != nil {
+		t.Fatalf("expected nil event for done marker, got %+v", event)
+	}
+}
+
+func TestParseResponsesSSEEvent_MalformedJSON(t *testing.T) {
+	event, err := ParseResponsesSSEEvent([]byte(`{"type":"response.created",`))
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	if event != nil {
+		t.Fatalf("expected nil event on malformed input, got %+v", event)
+	}
+}
+
+func TestExtractUsageFromResponsesEvent(t *testing.T) {
+	tests := []struct {
+		name               string
+		event              *ResponsesStreamEvent
+		expectedPrompt     int
+		expectedCompletion int
+		expectedTotal      int
+		expectedCached     int
+		expectedReasoning  int
+		expectNil          bool
+	}{
+		{
+			name:      "nil event",
+			event:     nil,
+			expectNil: true,
+		},
+		{
+			name: "completed with usage",
+			event: &ResponsesStreamEvent{
+				Type:     "response.completed",
+				Response: []byte(`{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`),
+			},
+			expectedPrompt:     10,
+			expectedCompletion: 5,
+			expectedTotal:      15,
+		},
+		{
+			name: "completed without usage",
+			event: &ResponsesStreamEvent{
+				Type:     "response.completed",
+				Response: []byte(`{"id":"resp_1","status":"completed"}`),
+			},
+			expectNil: true,
+		},
+		{
+			name: "non-completed event",
+			event: &ResponsesStreamEvent{
+				Type:     "response.created",
+				Response: []byte(`{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`),
+			},
+			expectNil: true,
+		},
+		{
+			name: "usage with cached tokens",
+			event: &ResponsesStreamEvent{
+				Type: "response.completed",
+				Response: []byte(`{
+					"usage":{
+						"input_tokens":100,
+						"output_tokens":20,
+						"total_tokens":120,
+						"input_tokens_details":{"cached_tokens":80}
+					}
+				}`),
+			},
+			expectedPrompt:     100,
+			expectedCompletion: 20,
+			expectedTotal:      120,
+			expectedCached:     80,
+		},
+		{
+			name: "usage with reasoning tokens",
+			event: &ResponsesStreamEvent{
+				Type: "response.completed",
+				Response: []byte(`{
+					"usage":{
+						"input_tokens":30,
+						"output_tokens":10,
+						"total_tokens":40,
+						"output_tokens_details":{"reasoning_tokens":7}
+					}
+				}`),
+			},
+			expectedPrompt:     30,
+			expectedCompletion: 10,
+			expectedTotal:      40,
+			expectedReasoning:  7,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExtractUsageFromResponsesEvent(tt.event)
+			if tt.expectNil {
+				if result != nil {
+					t.Fatalf("expected nil, got %+v", result)
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatal("expected non-nil usage")
+			}
+			if result.PromptTokens != tt.expectedPrompt {
+				t.Errorf("PromptTokens = %d, want %d", result.PromptTokens, tt.expectedPrompt)
+			}
+			if result.CompletionTokens != tt.expectedCompletion {
+				t.Errorf("CompletionTokens = %d, want %d", result.CompletionTokens, tt.expectedCompletion)
+			}
+			if result.TotalTokens != tt.expectedTotal {
+				t.Errorf("TotalTokens = %d, want %d", result.TotalTokens, tt.expectedTotal)
+			}
+
+			if tt.expectedCached > 0 {
+				if result.CacheUsage == nil {
+					t.Fatal("expected cache usage")
+				}
+				if result.CacheUsage.CachedTokens != tt.expectedCached {
+					t.Errorf("CachedTokens = %d, want %d", result.CacheUsage.CachedTokens, tt.expectedCached)
+				}
+			}
+
+			if tt.expectedReasoning > 0 {
+				if result.ReasoningTokens != tt.expectedReasoning {
+					t.Errorf("ReasoningTokens = %d, want %d", result.ReasoningTokens, tt.expectedReasoning)
+				}
+			}
+		})
 	}
 }

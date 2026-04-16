@@ -1,6 +1,9 @@
 package openai_compatible
 
 import (
+	"errors"
+	"net/url"
+
 	"github.com/agentuity/llmproxy"
 )
 
@@ -9,6 +12,8 @@ import (
 type Provider struct {
 	*llmproxy.BaseProvider
 }
+
+var _ llmproxy.WebSocketCapableProvider = (*Provider)(nil)
 
 // New creates a new OpenAI-compatible provider with the given configuration.
 //
@@ -64,4 +69,19 @@ func NewMultiAPI(name, apiKey, baseURL string) (*Provider, error) {
 //	provider := openai_compatible.NewWithProvider("custom", base)
 func NewWithProvider(name string, p *llmproxy.BaseProvider) *Provider {
 	return &Provider{BaseProvider: p}
+}
+
+func (p *Provider) WebSocketURL(meta llmproxy.BodyMetadata) (*url.URL, error) {
+	resolver := p.URLResolver()
+	if resolver == nil {
+		return nil, errors.New("provider has no URL resolver")
+	}
+
+	if wsResolver, ok := resolver.(interface {
+		WebSocketURL(llmproxy.BodyMetadata) (*url.URL, error)
+	}); ok {
+		return wsResolver.WebSocketURL(meta)
+	}
+
+	return nil, errors.New("provider URL resolver does not support websocket URL")
 }
