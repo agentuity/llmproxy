@@ -285,6 +285,7 @@ func TestDetectProvider(t *testing.T) {
 		{"gemini-1.5-flash", "googleai"},
 		{"llama-3-70b", "openai_compatible"},
 		{"mixtral-8x7b", "openai_compatible"},
+		{"mistral/codestral-2508", "mistral"},
 		{"unknown-model", ""},
 	}
 

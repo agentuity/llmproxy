@@ -3,6 +3,7 @@ package googleai
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -21,6 +22,9 @@ type Resolver struct {
 // If meta.Model is empty, defaults to "gemini-pro".
 func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 	model := meta.Model
+	if stripped, ok := strings.CutPrefix(model, "googleai/"); ok {
+		model = stripped
+	}
 	if model == "" {
 		model = "gemini-pro"
 	}

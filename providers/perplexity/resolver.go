@@ -2,6 +2,7 @@ package perplexity
 
 import (
 	"net/url"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -15,9 +16,17 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 }
 
 func NewResolver(baseURL string) (*Resolver, error) {
-	u, err := url.Parse(baseURL)
+	u, err := url.Parse(normalizeBaseURL(baseURL))
 	if err != nil {
 		return nil, err
 	}
 	return &Resolver{BaseURL: u}, nil
+}
+
+func normalizeBaseURL(raw string) string {
+	raw = strings.TrimRight(raw, "/")
+	if strings.HasSuffix(raw, "/v1") {
+		raw = raw[:len(raw)-3]
+	}
+	return raw
 }
