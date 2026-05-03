@@ -55,8 +55,8 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		}
 	}
 
-	if req.System != "" {
-		meta.Custom["system"] = req.System
+	if system := contentToString(req.System); system != "" {
+		meta.Custom["system"] = system
 	}
 
 	for k, v := range req.Custom {
@@ -87,7 +87,7 @@ type Request struct {
 	Model     string                 `json:"model"`
 	Messages  []Message              `json:"messages"`
 	MaxTokens int                    `json:"max_tokens,omitempty"`
-	System    string                 `json:"system,omitempty"`
+	System    Content                `json:"system,omitempty"`
 	Custom    map[string]interface{} `json:"-"`
 }
 

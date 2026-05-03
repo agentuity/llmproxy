@@ -138,6 +138,7 @@ func TestDetectProviderFromModel(t *testing.T) {
 		{"perplexity/sonar prefix", "perplexity/sonar-small", "perplexity"},
 		{"bedrock/claude prefix", "bedrock/anthropic.claude-3", "bedrock"},
 		{"azure/gpt-4 prefix", "azure/gpt-4", "azure"},
+		{"mistral/codestral prefix", "mistral/codestral-2508", "mistral"},
 		{"unknown/ prefix returns unknown", "unknown/model", ""},
 		{"single slash only", "/", ""},
 	}

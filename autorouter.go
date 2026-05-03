@@ -553,6 +553,7 @@ var knownProviderPrefixes = map[string]bool{
 	"perplexity": true,
 	"bedrock":    true,
 	"azure":      true,
+	"mistral":    true,
 }
 
 func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
@@ -562,7 +563,11 @@ func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
 	}
 	prefix := model[:idx]
 	if knownProviderPrefixes[prefix] {
-		return model[idx+1:], true
+		stripped = model[idx+1:]
+		if strings.HasPrefix(stripped, prefix+"/") {
+			stripped = strings.TrimPrefix(stripped, prefix+"/")
+		}
+		return stripped, true
 	}
 	return model, false
 }

@@ -392,6 +392,24 @@ func TestResolver_CustomBaseURL(t *testing.T) {
 	}
 }
 
+func TestResolver_CustomVersionedBaseURL(t *testing.T) {
+	resolver, err := NewResolver("https://api.fireworks.ai/inference/v1/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta := llmproxy.BodyMetadata{Model: "accounts/fireworks/models/test"}
+	u, err := resolver.Resolve(meta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := "https://api.fireworks.ai/inference/v1/chat/completions"
+	if u.String() != expected {
+		t.Errorf("URL = %q, want %q", u.String(), expected)
+	}
+}
+
 func TestResolver_InvalidURL(t *testing.T) {
 	_, err := NewResolver("://invalid-url")
 	if err == nil {

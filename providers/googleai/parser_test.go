@@ -32,6 +32,22 @@ func TestParser(t *testing.T) {
 		}
 	})
 
+	t.Run("parses model from request body", func(t *testing.T) {
+		body := `{"model":"gemini-2.0-flash","contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+		parser := &Parser{}
+
+		meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if meta.Model != "gemini-2.0-flash" {
+			t.Errorf("expected model gemini-2.0-flash, got %s", meta.Model)
+		}
+		if _, ok := meta.Custom["model"]; ok {
+			t.Error("model should not be captured as a custom field")
+		}
+	})
+
 	t.Run("parses request with generation config", func(t *testing.T) {
 		body := `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":100}}`
 		parser := &Parser{}
@@ -126,6 +142,23 @@ func TestResolver(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		expected := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+		if u.String() != expected {
+			t.Errorf("expected %s, got %s", expected, u.String())
+		}
+	})
+
+	t.Run("strips googleai provider prefix from resolved model", func(t *testing.T) {
+		resolver, err := NewResolver("https://generativelanguage.googleapis.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		meta := llmproxy.BodyMetadata{Model: "googleai/gemini-2.0-flash"}
+		u, err := resolver.Resolve(meta)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 		if u.String() != expected {
 			t.Errorf("expected %s, got %s", expected, u.String())
 		}

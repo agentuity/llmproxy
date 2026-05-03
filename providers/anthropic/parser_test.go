@@ -45,6 +45,19 @@ func TestParser(t *testing.T) {
 		}
 	})
 
+	t.Run("parses request with system prompt array", func(t *testing.T) {
+		body := `{"model":"anthropic/claude-sonnet-4-6","max_tokens":1024,"system":[{"type":"text","text":"You are helpful."}],"messages":[{"role":"user","content":"hello"}]}`
+		parser := &Parser{}
+
+		meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if meta.Custom["system"] != "You are helpful." {
+			t.Errorf("expected system prompt, got %v", meta.Custom["system"])
+		}
+	})
+
 	t.Run("parses content as array", func(t *testing.T) {
 		body := `{"model":"claude-3-opus-20240229","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
 		parser := &Parser{}

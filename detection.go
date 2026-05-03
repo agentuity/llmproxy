@@ -84,7 +84,7 @@ func DetectProviderFromModel(model string) string {
 	if idx := strings.Index(model, "/"); idx >= 0 {
 		prefix := model[:idx]
 		switch prefix {
-		case "openai", "anthropic", "googleai", "groq", "fireworks", "xai", "perplexity", "bedrock", "azure":
+		case "openai", "anthropic", "googleai", "groq", "fireworks", "xai", "perplexity", "bedrock", "azure", "mistral":
 			return prefix
 		}
 	}

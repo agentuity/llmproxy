@@ -88,7 +88,7 @@ func extractTextFromParts(parts []Part) string {
 
 // Request represents a Google AI generateContent request.
 type Request struct {
-	Model             string                 `json:"-"` // Extracted from path
+	Model             string                 `json:"model,omitempty"`
 	Contents          []Content              `json:"contents,omitempty"`
 	SystemInstruction *Content               `json:"systemInstruction,omitempty"`
 	GenerationConfig  GenerationConfig       `json:"generationConfig,omitempty"`
@@ -149,8 +149,9 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 
 	r.Custom = make(map[string]interface{})
 	known := map[string]bool{
-		"contents": true, "systemInstruction": true, "generationConfig": true,
-		"safetySettings": true, "tools": true, "toolConfig": true,
+		"model": true, "contents": true, "systemInstruction": true,
+		"generationConfig": true, "safetySettings": true, "tools": true,
+		"toolConfig": true,
 	}
 	for k, v := range raw {
 		if !known[k] {

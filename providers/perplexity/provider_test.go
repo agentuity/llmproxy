@@ -49,6 +49,23 @@ func TestResolver_PerplexityURL(t *testing.T) {
 	}
 }
 
+func TestResolver_PerplexityURLWithVersionedBase(t *testing.T) {
+	resolver, err := NewResolver("https://api.perplexity.ai/v1/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	u, err := resolver.Resolve(llmproxy.BodyMetadata{Model: "sonar"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := "https://api.perplexity.ai/v1/sonar"
+	if u.String() != expected {
+		t.Errorf("URL = %q, want %q", u.String(), expected)
+	}
+}
+
 func TestResolver_InvalidURL(t *testing.T) {
 	_, err := NewResolver("://invalid-url")
 	if err == nil {
