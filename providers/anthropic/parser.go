@@ -45,6 +45,7 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		Model:     req.Model,
 		Messages:  make([]llmproxy.Message, len(req.Messages)),
 		MaxTokens: req.MaxTokens,
+		Stream:    req.Stream,
 		Custom:    make(map[string]any),
 	}
 
@@ -87,6 +88,7 @@ type Request struct {
 	Model     string                 `json:"model"`
 	Messages  []Message              `json:"messages"`
 	MaxTokens int                    `json:"max_tokens,omitempty"`
+	Stream    bool                   `json:"stream,omitempty"`
 	System    Content                `json:"system,omitempty"`
 	Custom    map[string]interface{} `json:"-"`
 }
