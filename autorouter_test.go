@@ -822,3 +822,76 @@ func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
 		}
 	})
 }
+
+func TestAutoRouter_copyResponseHeaders(t *testing.T) {
+	w := httptest.NewRecorder()
+	copyResponseHeaders(w, http.Header{})
+	var sw strings.Builder
+	w.Header().Write(&sw)
+	if sw.Len() != 0 {
+		t.Errorf("headers should have been empty but was: %s", sw.String())
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+	copyResponseHeaders(w, http.Header{"A": []string{"B"}})
+	w.Header().Write(&sw)
+	if sw.Len() == 0 {
+		t.Error("headers should have content but was empty")
+	}
+	val := strings.TrimSpace(sw.String())
+	if val != "A: B" {
+		t.Errorf("headers should have A: B but was %s", val)
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+	copyResponseHeaders(w, http.Header{"A": []string{"B"}, "Content-Encoding": []string{"gzip"}})
+	w.Header().Write(&sw)
+	if sw.Len() == 0 {
+		t.Error("headers should have content but was empty")
+	}
+	val = strings.TrimSpace(sw.String())
+	if val != "A: B" {
+		t.Errorf("headers should have A: B but was %s", val)
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+	copyResponseHeaders(w, http.Header{"A": []string{"B"}, "content-encoding": []string{"gzip"}})
+	w.Header().Write(&sw)
+	if sw.Len() == 0 {
+		t.Error("headers should have content but was empty")
+	}
+	val = strings.TrimSpace(sw.String())
+	if val != "A: B" {
+		t.Errorf("headers should have A: B but was %s", val)
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+	copyResponseHeaders(w, http.Header{"A": []string{"B"}, "Content-Length": []string{"1"}})
+	w.Header().Write(&sw)
+	if sw.Len() == 0 {
+		t.Error("headers should have content but was empty")
+	}
+	val = strings.TrimSpace(sw.String())
+	if val != "A: B" {
+		t.Errorf("headers should have A: B but was %s", val)
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+	copyResponseHeaders(w, http.Header{"A": []string{"B"}, "content-length": []string{"1"}})
+	w.Header().Write(&sw)
+	if sw.Len() == 0 {
+		t.Error("headers should have content but was empty")
+	}
+	val = strings.TrimSpace(sw.String())
+	if val != "A: B" {
+		t.Errorf("headers should have A: B but was %s", val)
+	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
+}

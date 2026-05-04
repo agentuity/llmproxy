@@ -9,7 +9,23 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/agentuity/go-common/slice"
 )
+
+var skipHeaders = []string{"Content-Encoding", "Content-Length"}
+
+func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
+	header := w.Header()
+
+	for k, v := range headers {
+		if !slice.Contains(skipHeaders, k, slice.WithCaseInsensitive()) {
+			for _, val := range v {
+				header.Add(k, val)
+			}
+		}
+	}
+}
 
 type AutoRouter struct {
 	registry            Registry
@@ -303,6 +319,9 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		upstreamReq.Header[k] = v
 	}
 
+	// FOR SSE, turn off compression explicitly
+	upstreamReq.Header["Accept-Encoding"] = []string{"identity"}
+
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return ResponseMetadata{}, err
 	}
@@ -340,11 +359,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		w.Header().Set("Trailer", "X-Gateway-Cost,X-Gateway-Prompt-Tokens,X-Gateway-Completion-Tokens")
 	}
 
-	for k, v := range upstreamResp.Header {
-		if k != "Content-Length" {
-			w.Header()[k] = v
-		}
-	}
+	copyResponseHeaders(w, upstreamResp.Header)
 
 	w.WriteHeader(upstreamResp.StatusCode)
 
@@ -469,9 +484,7 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
+	copyResponseHeaders(w, resp.Header)
 
 	if billing, ok := meta.Custom["billing_result"].(BillingResult); ok {
 		w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
