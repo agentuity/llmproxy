@@ -13,14 +13,19 @@ import (
 	"github.com/agentuity/go-common/slice"
 )
 
+var skipHeaders = []string{"Content-Encoding", "Content-Length"}
+
 func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 	header := w.Header()
 
 	for k, v := range headers {
 		if !slice.Contains(skipHeaders, k, slice.WithCaseInsensitive()) {
 			for _, val := range v {
-				header.Add(k, val)
-				fmt.Println("SETTING HEADER", k, "=>", val)
+				if header.Get(k) == "" {
+					header.Add(k, val)
+				} else {
+					header.Set(k, val)
+				}
 			}
 		}
 	}
@@ -436,8 +441,6 @@ func (a *AutoRouter) streamResponseWithFlush(r io.Reader, w http.ResponseWriter,
 
 	return respMeta, nil
 }
-
-var skipHeaders = []string{"Content-Encoding", "Content-Length"}
 
 func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isWebSocketUpgrade(r) && a.wsUpgrader != nil && a.wsDialer != nil {
