@@ -22,9 +22,9 @@ func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 		if !slice.Contains(skipHeaders, k, slice.WithCaseInsensitive()) {
 			for _, val := range v {
 				if header.Get(k) == "" {
-					header.Add(k, val)
-				} else {
 					header.Set(k, val)
+				} else {
+					header.Add(k, val)
 				}
 			}
 		}

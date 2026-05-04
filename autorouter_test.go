@@ -891,4 +891,7 @@ func TestAutoRouter_copyResponseHeaders(t *testing.T) {
 	if val != "A: B" {
 		t.Errorf("headers should have A: B but was %s", val)
 	}
+	sw.Reset()
+	w = httptest.NewRecorder()
+
 }
