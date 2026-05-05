@@ -15,6 +15,12 @@ import (
 
 var skipHeaders = []string{"Content-Encoding", "Content-Length"}
 
+func disableUpstreamResponseCompression(req *http.Request) {
+	// Response extractors parse provider bodies directly, so upstream
+	// responses must stay uncompressed.
+	req.Header.Set("Accept-Encoding", "identity")
+}
+
 func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
 	header := w.Header()
 
@@ -189,6 +195,7 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return nil, ResponseMetadata{}, err
 	}
+	disableUpstreamResponseCompression(upstreamReq)
 
 	ctxValue := MetaContextValue{Meta: meta, RawBody: body}
 	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), MetaContextKey{}, ctxValue))
@@ -319,12 +326,10 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		upstreamReq.Header[k] = v
 	}
 
-	// FOR SSE, turn off compression explicitly
-	upstreamReq.Header["Accept-Encoding"] = []string{"identity"}
-
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return ResponseMetadata{}, err
 	}
+	disableUpstreamResponseCompression(upstreamReq)
 
 	ctxValue := MetaContextValue{Meta: meta, RawBody: body}
 	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), MetaContextKey{}, ctxValue))
