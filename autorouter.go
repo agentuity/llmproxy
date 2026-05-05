@@ -192,11 +192,10 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		upstreamReq.Header[k] = v
 	}
 
-	disableUpstreamResponseCompression(upstreamReq)
-
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return nil, ResponseMetadata{}, err
 	}
+	disableUpstreamResponseCompression(upstreamReq)
 
 	ctxValue := MetaContextValue{Meta: meta, RawBody: body}
 	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), MetaContextKey{}, ctxValue))
@@ -327,11 +326,10 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		upstreamReq.Header[k] = v
 	}
 
-	disableUpstreamResponseCompression(upstreamReq)
-
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return ResponseMetadata{}, err
 	}
+	disableUpstreamResponseCompression(upstreamReq)
 
 	ctxValue := MetaContextValue{Meta: meta, RawBody: body}
 	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), MetaContextKey{}, ctxValue))

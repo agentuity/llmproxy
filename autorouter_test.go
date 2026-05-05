@@ -167,7 +167,7 @@ func TestAutoRouter_ForwardForcesIdentityAcceptEncoding(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"test","model":"gpt-4","choices":[]}`))
+		_, _ = w.Write([]byte(`{"id":"test","model":"gpt-4","choices":[]}`))
 	}))
 	defer upstream.Close()
 
@@ -177,7 +177,10 @@ func TestAutoRouter_ForwardForcesIdentityAcceptEncoding(t *testing.T) {
 			data, _ := io.ReadAll(body)
 			return BodyMetadata{Model: "gpt-4"}, data, nil
 		},
-		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+			req.Header.Set("Accept-Encoding", "gzip")
+			return nil
+		},
 		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
 			return ParseURL(upstream.URL + "/v1/chat/completions")
 		},
@@ -210,6 +213,7 @@ func TestAutoRouter_ForwardForcesIdentityAcceptEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Forward() error = %v", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
@@ -694,7 +698,7 @@ func TestAutoRouter_ForwardStreamingForcesIdentityAcceptEncoding(t *testing.T) {
 		upstreamAcceptEncoding = r.Header.Get("Accept-Encoding")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(eventStream))
+		_, _ = w.Write([]byte(eventStream))
 	}))
 	defer upstream.Close()
 
@@ -705,7 +709,10 @@ func TestAutoRouter_ForwardStreamingForcesIdentityAcceptEncoding(t *testing.T) {
 				data, _ := io.ReadAll(body)
 				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
 			},
-			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+				req.Header.Set("Accept-Encoding", "gzip")
+				return nil
+			},
 			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
 				return url.Parse(upstream.URL)
 			},
