@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,7 +138,7 @@ func TestAutoRouter_Forward(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, meta, err := router.Forward(context.Background(), req)
@@ -205,7 +206,7 @@ func TestAutoRouter_ForwardForcesIdentityAcceptEncoding(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 
@@ -226,6 +227,236 @@ func TestAutoRouter_ForwardForcesIdentityAcceptEncoding(t *testing.T) {
 	}
 }
 
+func TestAutoRouter_ForwardPassesThroughUpstreamErrorBody(t *testing.T) {
+	upstreamBody := `{"error":{"message":"upstream rejected request"}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	extractorCalled := false
+	provider := &mockProvider{
+		name: "test-provider",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-4"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			extractorCalled = true
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "test-provider"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4"}`)))
+	resp, meta, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if extractorCalled {
+		t.Fatal("response extractor should not be called for upstream error responses")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != upstreamBody {
+		t.Fatalf("body = %q, want %q", string(body), upstreamBody)
+	}
+	if meta.ID != "" || meta.Model != "" {
+		t.Fatalf("metadata = %#v, want empty metadata", meta)
+	}
+}
+
+func TestAutoRouter_DeepseekV4StripsProviderPrefixBeforeForwarding(t *testing.T) {
+	var upstreamModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		upstreamModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-deepseek","model":"deepseek-v4-pro","choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "deepseek",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return BodyMetadata{}, nil, err
+			}
+			return BodyMetadata{Model: req.Model}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl-deepseek", Model: "deepseek-v4-pro"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "deepseek"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "deepseek/deepseek-v4-pro",
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if upstreamModel != "deepseek-v4-pro" {
+		t.Fatalf("upstream model = %q, want deepseek-v4-pro", upstreamModel)
+	}
+}
+
+func TestAutoRouter_CohereCommandRUpstreamEmptyErrorDoesNotBecomeExtractorError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if body.Model != "command-r-08-2024" {
+			t.Fatalf("upstream model = %q, want command-r-08-2024", body.Model)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	extractorCalled := false
+	provider := &mockProvider{
+		name: "cohere",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return BodyMetadata{}, nil, err
+			}
+			return BodyMetadata{Model: req.Model}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			extractorCalled = true
+			return ResponseMetadata{}, nil, errors.New("extractor should not parse upstream errors")
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "cohere"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "command-r-08-2024",
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if extractorCalled {
+		t.Fatal("response extractor should not be called for upstream error responses")
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("StatusCode = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) != 0 {
+		t.Fatalf("body = %q, want empty body", string(body))
+	}
+}
+
+func TestProxy_ForwardPassesThroughUpstreamErrorBody(t *testing.T) {
+	upstreamBody := `provider unavailable`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+
+	extractorCalled := false
+	provider := &mockProvider{
+		name: "test-provider",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-4"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			extractorCalled = true
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	proxy := NewProxy(provider)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4"}`)))
+	resp, _, err := proxy.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if extractorCalled {
+		t.Fatal("response extractor should not be called for upstream error responses")
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("StatusCode = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != upstreamBody {
+		t.Fatalf("body = %q, want %q", string(body), upstreamBody)
+	}
+}
+
 func TestAutoRouter_NoProvider(t *testing.T) {
 	detector := &mockDetector{
 		detectFn: func(hint ProviderHint) string { return "" },
@@ -235,7 +466,7 @@ func TestAutoRouter_NoProvider(t *testing.T) {
 		WithAutoRouterDetector(detector),
 	)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"unknown-model"}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"unknown-model"}`)))
 
 	_, _, err := router.Forward(context.Background(), req)
 	if err == nil {
@@ -278,7 +509,7 @@ func TestAutoRouter_FallbackProvider(t *testing.T) {
 		WithAutoRouterFallbackProvider(fallback),
 	)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"unknown"}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"unknown"}`)))
 
 	resp, meta, err := router.Forward(context.Background(), req)
 	if err != nil {
@@ -328,7 +559,7 @@ func TestAutoRouter_ServeHTTP(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{}`)))
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -369,6 +600,7 @@ func TestStripProviderPrefix(t *testing.T) {
 		{"bedrock prefix", "bedrock/anthropic.claude-3", "anthropic.claude-3", true},
 		{"azure prefix", "azure/gpt-4-deployment", "gpt-4-deployment", true},
 		{"mistral prefix", "mistral/codestral-2508", "codestral-2508", true},
+		{"deepseek prefix", "deepseek/deepseek-v4-pro", "deepseek-v4-pro", true},
 		{"multiple slashes preserved", "openai/gpt-4/turbo", "gpt-4/turbo", true},
 		{"empty string", "", "", false},
 		{"slash only - not a provider", "/", "/", false},
@@ -432,7 +664,7 @@ func TestAutoRouter_StripsProviderPrefixFromBody(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, _, err := router.Forward(context.Background(), req)
@@ -483,7 +715,7 @@ func TestAutoRouter_PreservesModelWithoutPrefix(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, _, err := router.Forward(context.Background(), req)
@@ -546,7 +778,7 @@ func TestAutoRouter_StreamingInjectsStreamOptions(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -615,7 +847,7 @@ func TestAutoRouter_StreamingOverridesStreamOptions(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -676,7 +908,7 @@ func TestAutoRouter_StreamingNoBillingNoStreamOptions(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -734,7 +966,7 @@ func TestAutoRouter_ForwardStreamingForcesIdentityAcceptEncoding(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	w := httptest.NewRecorder()
@@ -798,7 +1030,7 @@ func TestAutoRouter_NonStreamingNoStreamOptions(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -863,7 +1095,7 @@ func TestAutoRouter_AnthropicStreamingNoStreamOptions(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"claude-3-opus","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"claude-3-opus","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -930,7 +1162,7 @@ func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
 
 	t.Run("path-based detection", func(t *testing.T) {
 		receivedBody = nil
-		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
+		req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -947,7 +1179,7 @@ func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
 
 	t.Run("body-based detection", func(t *testing.T) {
 		receivedBody = nil
-		req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
+		req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4o","stream":true,"input":"Hello"}`)))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 

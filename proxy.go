@@ -126,6 +126,16 @@ func (p *Proxy) roundTrip(req *http.Request) (*http.Response, ResponseMetadata, 
 	if err != nil {
 		return nil, ResponseMetadata{}, nil, err
 	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		if resp.Body != nil {
+			defer resp.Body.Close()
+		}
+		rawBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, ResponseMetadata{}, nil, readErr
+		}
+		return resp, ResponseMetadata{}, rawBody, nil
+	}
 
 	respMeta, rawBody, err := p.provider.ResponseExtractor().Extract(resp)
 	if err != nil {
