@@ -133,3 +133,50 @@ func TestExtractor_CacheAndReasoningTokens(t *testing.T) {
 		t.Errorf("reasoning_tokens = %d, want 256", rt)
 	}
 }
+
+func TestExtractor_ResponseMessageContentArray(t *testing.T) {
+	body := `{
+		"id": "chatcmpl-abc",
+		"object": "chat.completion",
+		"model": "magistral-medium-latest",
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 2,
+			"total_tokens": 12
+		},
+		"choices": [
+			{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": [
+						{"type": "text", "text": "O"},
+						{"type": "text", "text": "K"}
+					]
+				},
+				"finish_reason": "stop"
+			}
+		]
+	}`
+
+	extractor := NewExtractor()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+	}
+
+	meta, rawBody, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if string(rawBody) != body {
+		t.Fatal("expected raw response body to be preserved")
+	}
+	if len(meta.Choices) != 1 || meta.Choices[0].Message == nil {
+		t.Fatalf("expected one message choice, got %#v", meta.Choices)
+	}
+	if meta.Choices[0].Message.Content != "OK" {
+		t.Errorf("message content = %v, want OK", meta.Choices[0].Message.Content)
+	}
+}

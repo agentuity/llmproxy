@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -133,6 +134,49 @@ type ResponseChoice struct {
 type ResponseMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// UnmarshalJSON accepts the common OpenAI string content shape and the
+// structured array content shape returned by some OpenAI-compatible providers.
+func (m *ResponseMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	m.Role = raw.Role
+	m.Content = responseContentToString(raw.Content)
+	return nil
+}
+
+func responseContentToString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return string(raw)
+	}
+
+	textParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part.Text != "" {
+			textParts = append(textParts, part.Text)
+		}
+	}
+	return strings.Join(textParts, "")
 }
 
 // NewExtractor creates a new OpenAI-compatible response extractor.
