@@ -154,11 +154,12 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
 			raw["model"] = strippedModel
 			model = strippedModel
-			var err error
-			body, err = json.Marshal(raw)
-			if err != nil {
-				return nil, ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
-			}
+		}
+		normalizeProviderRequest(raw, providerName)
+		var err error
+		body, err = json.Marshal(raw)
+		if err != nil {
+			return nil, ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 	}
 
@@ -290,6 +291,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 			raw["model"] = strippedModel
 			model = strippedModel
 		}
+		normalizeProviderRequest(raw, providerName)
 		if a.billingCalculator != nil {
 			if stream, ok := raw["stream"].(bool); ok && stream {
 				if !nativeStreamUsageProviders[providerName] && apiType != APITypeResponses {
@@ -378,7 +380,14 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 
 	w.WriteHeader(upstreamResp.StatusCode)
 
-	rc := http.NewResponseController(w)
+	var sseWriter *sseTerminalHoldingWriter
+	streamWriter := w
+	if a.billingCalculator != nil && IsSSEStream(upstreamResp.Header.Get("Content-Type")) {
+		sseWriter = newSSETerminalHoldingWriter(w)
+		streamWriter = sseWriter
+	}
+
+	rc := http.NewResponseController(streamWriter)
 
 	extractor := provider.ResponseExtractor()
 	streamExtractor, isStreaming := extractor.(StreamingResponseExtractor)
@@ -386,12 +395,12 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 	var respMeta ResponseMetadata
 
 	if isStreaming && streamExtractor.IsStreamingResponse(upstreamResp) {
-		respMeta, err = streamExtractor.ExtractStreamingWithController(upstreamResp, w, rc)
+		respMeta, err = streamExtractor.ExtractStreamingWithController(upstreamResp, streamWriter, rc)
 		if err != nil {
 			return respMeta, err
 		}
 	} else {
-		respMeta, err = a.streamResponseWithFlush(upstreamResp.Body, w, rc, extractor)
+		respMeta, err = a.streamResponseWithFlush(upstreamResp.Body, streamWriter, rc, extractor)
 		if err != nil {
 			return respMeta, err
 		}
@@ -404,10 +413,103 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 			w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
 			w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
 			w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
+			if sseWriter != nil && sseWriter.HasTerminal() {
+				if err := writeGatewayMetadataEvent(w, rc, billing); err != nil {
+					return respMeta, err
+				}
+			}
+		}
+	}
+	if sseWriter != nil {
+		if err := sseWriter.FlushTerminal(); err != nil {
+			return respMeta, err
+		}
+		if err := rc.Flush(); err != nil {
+			return respMeta, err
 		}
 	}
 
 	return respMeta, nil
+}
+
+type sseTerminalHoldingWriter struct {
+	http.ResponseWriter
+	terminal []byte
+}
+
+func newSSETerminalHoldingWriter(w http.ResponseWriter) *sseTerminalHoldingWriter {
+	return &sseTerminalHoldingWriter{ResponseWriter: w}
+}
+
+func (w *sseTerminalHoldingWriter) Write(data []byte) (int, error) {
+	idx := bytes.Index(data, []byte("data: [DONE]"))
+	if idx < 0 {
+		n, err := w.ResponseWriter.Write(data)
+		if err != nil {
+			return n, err
+		}
+		return len(data), nil
+	}
+
+	if idx > 0 {
+		if _, err := w.ResponseWriter.Write(data[:idx]); err != nil {
+			return 0, err
+		}
+	}
+	w.terminal = append(w.terminal, data[idx:]...)
+	return len(data), nil
+}
+
+func (w *sseTerminalHoldingWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *sseTerminalHoldingWriter) HasTerminal() bool {
+	return len(w.terminal) > 0
+}
+
+func (w *sseTerminalHoldingWriter) FlushTerminal() error {
+	if len(w.terminal) == 0 {
+		return nil
+	}
+	_, err := w.ResponseWriter.Write(w.terminal)
+	w.terminal = nil
+	return err
+}
+
+func writeGatewayMetadataEvent(w http.ResponseWriter, rc *http.ResponseController, billing BillingResult) error {
+	payload := map[string]any{
+		"type": "gateway.metadata",
+		"data": map[string]any{
+			"cost": map[string]any{
+				"total":            billing.TotalCost,
+				"promptTokens":     billing.PromptTokens,
+				"completionTokens": billing.CompletionTokens,
+			},
+		},
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.Write([]byte("event: gateway.metadata\n")); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("\n\n")); err != nil {
+		return err
+	}
+
+	return rc.Flush()
 }
 
 func (a *AutoRouter) streamResponseWithFlush(r io.Reader, w http.ResponseWriter, rc *http.ResponseController, extractor ResponseExtractor) (ResponseMetadata, error) {
@@ -599,4 +701,37 @@ func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
 		return stripped, true
 	}
 	return model, false
+}
+
+func normalizeProviderRequest(raw map[string]any, providerName string) {
+	if providerName != "deepseek" {
+		return
+	}
+
+	reasoning, hasReasoning := raw["reasoning"]
+	if !hasReasoning {
+		return
+	}
+
+	switch value := reasoning.(type) {
+	case string:
+		switch strings.ToLower(value) {
+		case "", "off", "false", "none", "disabled":
+			delete(raw, "reasoning")
+			delete(raw, "reasoning_effort")
+			raw["thinking"] = map[string]any{"type": "disabled"}
+		case "low", "medium", "high", "max", "xhigh":
+			delete(raw, "reasoning")
+			raw["thinking"] = map[string]any{"type": "enabled"}
+			raw["reasoning_effort"] = value
+		}
+	case bool:
+		delete(raw, "reasoning")
+		if value {
+			raw["thinking"] = map[string]any{"type": "enabled"}
+		} else {
+			delete(raw, "reasoning_effort")
+			raw["thinking"] = map[string]any{"type": "disabled"}
+		}
+	}
 }
