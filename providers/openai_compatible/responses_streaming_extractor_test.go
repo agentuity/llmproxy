@@ -85,6 +85,44 @@ func TestResponsesStreamingExtractor_UsageExtraction(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamingExtractor_TopLevelUsageExtraction(t *testing.T) {
+	stream := "data: {\"type\":\"response.completed\",\"usage\":{\"input_tokens\":101,\"output_tokens\":44,\"total_tokens\":145}}\n\n"
+
+	meta, _, err := runResponsesStreamExtraction(t, "text/event-stream", stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Usage.PromptTokens != 101 {
+		t.Errorf("PromptTokens = %d, want 101", meta.Usage.PromptTokens)
+	}
+	if meta.Usage.CompletionTokens != 44 {
+		t.Errorf("CompletionTokens = %d, want 44", meta.Usage.CompletionTokens)
+	}
+	if meta.Usage.TotalTokens != 145 {
+		t.Errorf("TotalTokens = %d, want 145", meta.Usage.TotalTokens)
+	}
+}
+
+func TestResponsesStreamingExtractor_IncompleteUsageExtraction(t *testing.T) {
+	stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o\",\"status\":\"incomplete\",\"usage\":{\"input_tokens\":20,\"output_tokens\":30,\"total_tokens\":50}}}\n\n"
+
+	meta, _, err := runResponsesStreamExtraction(t, "text/event-stream", stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Usage.PromptTokens != 20 {
+		t.Errorf("PromptTokens = %d, want 20", meta.Usage.PromptTokens)
+	}
+	if meta.Usage.CompletionTokens != 30 {
+		t.Errorf("CompletionTokens = %d, want 30", meta.Usage.CompletionTokens)
+	}
+	if meta.Usage.TotalTokens != 50 {
+		t.Errorf("TotalTokens = %d, want 50", meta.Usage.TotalTokens)
+	}
+}
+
 func TestResponsesStreamingExtractor_CacheUsageExtraction(t *testing.T) {
 	stream := "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n" +
 		"data: [DONE]\n\n"

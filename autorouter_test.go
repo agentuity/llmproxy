@@ -1494,6 +1494,84 @@ func TestAutoRouter_StreamingWritesGatewayMetadataEvent(t *testing.T) {
 	}
 }
 
+func TestAutoRouter_StreamingWritesGatewayMetadataEventWithoutTerminalMarker(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				_, _ = io.Copy(w, resp.Body)
+				_ = rc.Flush()
+				return ResponseMetadata{
+					ID:    "test",
+					Usage: Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+				}, nil
+			},
+		},
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"input":"Hello"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+
+	body := w.Body.String()
+	metadataIndex := strings.Index(body, "event: gateway.metadata")
+	if metadataIndex < 0 {
+		t.Fatalf("stream body missing metadata event: %q", body)
+	}
+
+	metadataChunk := body[metadataIndex:]
+	if !strings.Contains(metadataChunk, `"type":"gateway.metadata"`) {
+		t.Fatalf("metadata event missing type: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"total":0.0002`) {
+		t.Fatalf("metadata event missing total cost: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"promptTokens":100`) {
+		t.Fatalf("metadata event missing prompt tokens: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"completionTokens":50`) {
+		t.Fatalf("metadata event missing completion tokens: %q", metadataChunk)
+	}
+}
+
 func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
 	var receivedBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

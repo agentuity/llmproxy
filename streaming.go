@@ -202,7 +202,13 @@ type AnthropicStreamMessage struct {
 }
 
 type ResponsesStreamEvent struct {
-	Type     string          `json:"type"`
+	Type   string                `json:"type"`
+	ID     string                `json:"id,omitempty"`
+	Object string                `json:"object,omitempty"`
+	Model  string                `json:"model,omitempty"`
+	Status string                `json:"status,omitempty"`
+	Usage  *ResponsesStreamUsage `json:"usage,omitempty"`
+
 	Response json.RawMessage `json:"response,omitempty"`
 }
 
@@ -332,33 +338,39 @@ func ExtractUsageFromAnthropicEvent(event *AnthropicStreamEvent) *StreamingUsage
 }
 
 func ExtractUsageFromResponsesEvent(event *ResponsesStreamEvent) *StreamingUsage {
-	if event == nil || event.Type != "response.completed" || len(event.Response) == 0 {
+	if event == nil || (event.Type != "response.completed" && event.Type != "response.incomplete") {
 		return nil
 	}
 
-	var response ResponsesStreamResponse
-	if err := json.Unmarshal(event.Response, &response); err != nil {
-		return nil
+	var responseUsage *ResponsesStreamUsage
+	if len(event.Response) > 0 {
+		var response ResponsesStreamResponse
+		if err := json.Unmarshal(event.Response, &response); err != nil {
+			return nil
+		}
+		responseUsage = response.Usage
+	} else {
+		responseUsage = event.Usage
 	}
 
-	if response.Usage == nil {
+	if responseUsage == nil {
 		return nil
 	}
 
 	usage := &StreamingUsage{
-		PromptTokens:     response.Usage.InputTokens,
-		CompletionTokens: response.Usage.OutputTokens,
-		TotalTokens:      response.Usage.TotalTokens,
+		PromptTokens:     responseUsage.InputTokens,
+		CompletionTokens: responseUsage.OutputTokens,
+		TotalTokens:      responseUsage.TotalTokens,
 	}
 
-	if response.Usage.InputTokensDetails != nil && response.Usage.InputTokensDetails.CachedTokens > 0 {
+	if responseUsage.InputTokensDetails != nil && responseUsage.InputTokensDetails.CachedTokens > 0 {
 		usage.CacheUsage = &CacheUsage{
-			CachedTokens: response.Usage.InputTokensDetails.CachedTokens,
+			CachedTokens: responseUsage.InputTokensDetails.CachedTokens,
 		}
 	}
 
-	if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ReasoningTokens > 0 {
-		usage.ReasoningTokens = response.Usage.OutputTokensDetails.ReasoningTokens
+	if responseUsage.OutputTokensDetails != nil && responseUsage.OutputTokensDetails.ReasoningTokens > 0 {
+		usage.ReasoningTokens = responseUsage.OutputTokensDetails.ReasoningTokens
 	}
 
 	return usage

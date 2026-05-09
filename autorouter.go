@@ -413,7 +413,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 			w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
 			w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
 			w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
-			if sseWriter != nil && sseWriter.HasTerminal() {
+			if sseWriter != nil {
 				if err := writeGatewayMetadataEvent(w, rc, billing); err != nil {
 					return respMeta, err
 				}
