@@ -345,6 +345,305 @@ func TestAutoRouter_DeepseekV4StripsProviderPrefixBeforeForwarding(t *testing.T)
 	}
 }
 
+func TestAutoRouter_DeepseekReasoningOffDisablesThinking(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-deepseek","model":"deepseek-v4-pro","choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "deepseek",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return BodyMetadata{}, nil, err
+			}
+			return BodyMetadata{Model: req.Model}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl-deepseek", Model: "deepseek-v4-pro"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "deepseek"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "deepseek/deepseek-v4-pro",
+		"reasoning": "off",
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if _, ok := upstreamBody["reasoning"]; ok {
+		t.Fatalf("upstream reasoning should be removed: %#v", upstreamBody)
+	}
+	thinking, ok := upstreamBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream thinking missing: %#v", upstreamBody)
+	}
+	if thinking["type"] != "disabled" {
+		t.Fatalf("upstream thinking.type = %q, want disabled", thinking["type"])
+	}
+}
+
+func TestAutoRouter_DeepseekReasoningHighEnablesThinking(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-deepseek","model":"deepseek-v4-pro","choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "deepseek",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return BodyMetadata{}, nil, err
+			}
+			return BodyMetadata{Model: req.Model}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl-deepseek", Model: "deepseek-v4-pro"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "deepseek"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "deepseek/deepseek-v4-pro",
+		"reasoning": "high",
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if _, ok := upstreamBody["reasoning"]; ok {
+		t.Fatalf("upstream reasoning should be removed: %#v", upstreamBody)
+	}
+	thinking, ok := upstreamBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream thinking missing: %#v", upstreamBody)
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("upstream thinking.type = %q, want enabled", thinking["type"])
+	}
+	if upstreamBody["reasoning_effort"] != "high" {
+		t.Fatalf("upstream reasoning_effort = %q, want high", upstreamBody["reasoning_effort"])
+	}
+}
+
+func TestAutoRouter_DeepseekReasoningOffDisablesThinkingForStreaming(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-deepseek\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "deepseek",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				var req struct {
+					Model string `json:"model"`
+				}
+				if err := json.Unmarshal(data, &req); err != nil {
+					return BodyMetadata{}, nil, err
+				}
+				return BodyMetadata{Model: req.Model, Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return ParseURL(upstream.URL + "/v1/chat/completions")
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				_, _ = io.Copy(w, resp.Body)
+				_ = rc.Flush()
+				return ResponseMetadata{ID: "chatcmpl-deepseek", Model: "deepseek-v4-pro"}, nil
+			},
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "deepseek"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "deepseek/deepseek-v4-pro",
+		"reasoning": "off",
+		"reasoning_effort": "high",
+		"stream": true,
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	w := httptest.NewRecorder()
+	_, err := router.ForwardStreaming(context.Background(), req, w)
+	if err != nil {
+		t.Fatalf("ForwardStreaming() error = %v", err)
+	}
+
+	if _, ok := upstreamBody["reasoning"]; ok {
+		t.Fatalf("upstream reasoning should be removed: %#v", upstreamBody)
+	}
+	if _, ok := upstreamBody["reasoning_effort"]; ok {
+		t.Fatalf("upstream reasoning_effort should be removed: %#v", upstreamBody)
+	}
+	thinking, ok := upstreamBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream thinking missing: %#v", upstreamBody)
+	}
+	if thinking["type"] != "disabled" {
+		t.Fatalf("upstream thinking.type = %q, want disabled", thinking["type"])
+	}
+}
+
+func TestAutoRouter_DeepseekReasoningHighEnablesThinkingForStreaming(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-deepseek\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "deepseek",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				var req struct {
+					Model string `json:"model"`
+				}
+				if err := json.Unmarshal(data, &req); err != nil {
+					return BodyMetadata{}, nil, err
+				}
+				return BodyMetadata{Model: req.Model, Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return ParseURL(upstream.URL + "/v1/chat/completions")
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				_, _ = io.Copy(w, resp.Body)
+				_ = rc.Flush()
+				return ResponseMetadata{ID: "chatcmpl-deepseek", Model: "deepseek-v4-pro"}, nil
+			},
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "deepseek"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "deepseek/deepseek-v4-pro",
+		"reasoning": "high",
+		"stream": true,
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	w := httptest.NewRecorder()
+	_, err := router.ForwardStreaming(context.Background(), req, w)
+	if err != nil {
+		t.Fatalf("ForwardStreaming() error = %v", err)
+	}
+
+	if _, ok := upstreamBody["reasoning"]; ok {
+		t.Fatalf("upstream reasoning should be removed: %#v", upstreamBody)
+	}
+	thinking, ok := upstreamBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream thinking missing: %#v", upstreamBody)
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("upstream thinking.type = %q, want enabled", thinking["type"])
+	}
+	if upstreamBody["reasoning_effort"] != "high" {
+		t.Fatalf("upstream reasoning_effort = %q, want high", upstreamBody["reasoning_effort"])
+	}
+}
+
+func TestAutoRouter_DeepseekUnknownReasoningIsLeftUntouched(t *testing.T) {
+	raw := map[string]any{
+		"reasoning":        "experimental",
+		"reasoning_effort": "medium",
+	}
+
+	normalizeProviderRequest(raw, "deepseek")
+
+	if raw["reasoning"] != "experimental" {
+		t.Fatalf("reasoning = %q, want experimental", raw["reasoning"])
+	}
+	if raw["reasoning_effort"] != "medium" {
+		t.Fatalf("reasoning_effort = %q, want medium", raw["reasoning_effort"])
+	}
+	if _, ok := raw["thinking"]; ok {
+		t.Fatalf("thinking should not be set for unknown reasoning: %#v", raw)
+	}
+}
+
 func TestAutoRouter_CohereCommandRUpstreamEmptyErrorDoesNotBecomeExtractorError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1107,6 +1406,91 @@ func TestAutoRouter_AnthropicStreamingNoStreamOptions(t *testing.T) {
 
 	if _, ok := receivedBody["stream_options"]; ok {
 		t.Error("stream_options should NOT be injected for Anthropic (always sends usage in events)")
+	}
+}
+
+func TestAutoRouter_StreamingWritesGatewayMetadataEvent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"test\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "test",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, _ := io.ReadAll(body)
+				return BodyMetadata{Model: "gpt-4", Stream: true}, data, nil
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				return url.Parse(upstream.URL)
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				_, _ = io.Copy(w, resp.Body)
+				_ = rc.Flush()
+				return ResponseMetadata{
+					ID:    "test",
+					Usage: Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+				}, nil
+			},
+		},
+	}
+
+	billing := NewBillingCalculator(
+		func(provider, model string) (CostInfo, bool) {
+			return CostInfo{Input: 1, Output: 2}, true
+		},
+		nil,
+	)
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "test" })),
+		WithAutoRouterBillingCalculator(billing),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+
+	body := w.Body.String()
+	metadataIndex := strings.Index(body, "event: gateway.metadata")
+	doneIndex := strings.Index(body, "data: [DONE]")
+	if metadataIndex < 0 || doneIndex < 0 {
+		t.Fatalf("stream body missing metadata or terminal event: %q", body)
+	}
+	if metadataIndex > doneIndex {
+		t.Fatalf("metadata event should be written before terminal event: %q", body)
+	}
+	nextEventIndex := strings.Index(body[metadataIndex+1:], "\nevent: ")
+	metadataEnd := doneIndex
+	if nextEventIndex >= 0 {
+		metadataEnd = metadataIndex + 1 + nextEventIndex
+	}
+	metadataChunk := body[metadataIndex:metadataEnd]
+	if !strings.Contains(metadataChunk, `"type":"gateway.metadata"`) {
+		t.Fatalf("metadata event missing type: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"total":0.0002`) {
+		t.Fatalf("metadata event missing total cost: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"promptTokens":100`) {
+		t.Fatalf("metadata event missing prompt tokens: %q", metadataChunk)
+	}
+	if !strings.Contains(metadataChunk, `"completionTokens":50`) {
+		t.Fatalf("metadata event missing completion tokens: %q", metadataChunk)
 	}
 }
 
