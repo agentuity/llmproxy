@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"unicode/utf8"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -39,12 +40,19 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		return llmproxy.BodyMetadata{}, nil, err
 	}
 
+	meteredUsage := llmproxy.MeteredUsage{}
+	if req.Input != "" {
+		meteredUsage.InputCharacters = utf8.RuneCountInString(req.Input)
+		meteredUsage.HasInputCharacters = true
+	}
+
 	meta := llmproxy.BodyMetadata{
-		Model:     req.Model,
-		Messages:  req.Messages,
-		MaxTokens: req.MaxTokens,
-		Stream:    req.Stream,
-		Custom:    make(map[string]any),
+		Model:        req.Model,
+		Messages:     req.Messages,
+		MaxTokens:    req.MaxTokens,
+		Stream:       req.Stream,
+		MeteredUsage: meteredUsage,
+		Custom:       make(map[string]any),
 	}
 
 	for k, v := range req.Custom {
@@ -65,6 +73,8 @@ type OpenAIRequest struct {
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Stream enables streaming responses.
 	Stream bool `json:"stream"`
+	// Input is used by non-chat APIs such as audio speech generation.
+	Input string `json:"input,omitempty"`
 	// Custom holds provider-specific parameters not in the standard schema.
 	Custom map[string]interface{} `json:"-"`
 }
@@ -88,7 +98,7 @@ func (r *OpenAIRequest) UnmarshalJSON(data []byte) error {
 
 	r.Custom = make(map[string]interface{})
 	known := map[string]bool{
-		"model": true, "messages": true, "max_tokens": true,
+		"model": true, "messages": true, "max_tokens": true, "input": true,
 		"stream": true, "temperature": true, "top_p": true,
 		"n": true, "stop": true, "presence_penalty": true,
 		"frequency_penalty": true, "logit_bias": true, "user": true,

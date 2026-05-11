@@ -56,6 +56,13 @@ func TestResponsesParser(t *testing.T) {
 		t.Errorf("api_type = %v, want responses", meta.Custom["api_type"])
 	}
 
+	if meta.MeteredUsage.InputCharacters != 13 {
+		t.Errorf("InputCharacters = %d, want 13", meta.MeteredUsage.InputCharacters)
+	}
+	if !meta.MeteredUsage.HasInputCharacters {
+		t.Error("HasInputCharacters = false, want true")
+	}
+
 	if len(data) == 0 {
 		t.Error("data is empty")
 	}
@@ -1728,6 +1735,47 @@ func TestStreamingMultiAPIExtractor_ResponsesAPIDispatch(t *testing.T) {
 	}
 	ctxValue := llmproxy.MetaContextValue{
 		Meta: llmproxy.BodyMetadata{Custom: map[string]any{"api_type": llmproxy.APITypeResponses}},
+	}
+	req = req.WithContext(context.WithValue(req.Context(), llmproxy.MetaContextKey{}, ctxValue))
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Request:    req,
+	}
+
+	recorder := httptest.NewRecorder()
+	rc := http.NewResponseController(recorder)
+
+	extractor := NewStreamingMultiAPIExtractor()
+	meta, err := extractor.ExtractStreamingWithController(resp, recorder, rc)
+	if err != nil {
+		t.Fatalf("ExtractStreamingWithController() error = %v", err)
+	}
+
+	if meta.ID != "resp_dispatch" {
+		t.Errorf("ID = %q, want resp_dispatch", meta.ID)
+	}
+	if meta.Usage.TotalTokens != 15 {
+		t.Errorf("TotalTokens = %d, want 15", meta.Usage.TotalTokens)
+	}
+	if meta.Custom["api_type"] != llmproxy.APITypeResponses {
+		t.Errorf("api_type = %v, want responses", meta.Custom["api_type"])
+	}
+}
+
+func TestStreamingMultiAPIExtractor_ResponsesAPIStringDispatch(t *testing.T) {
+	stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_dispatch\",\"model\":\"gpt-4o\"}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_dispatch\",\"model\":\"gpt-4o\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n" +
+		"data: [DONE]\n\n"
+
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	ctxValue := llmproxy.MetaContextValue{
+		Meta: llmproxy.BodyMetadata{Custom: map[string]any{"api_type": string(llmproxy.APITypeResponses)}},
 	}
 	req = req.WithContext(context.WithValue(req.Context(), llmproxy.MetaContextKey{}, ctxValue))
 

@@ -151,6 +151,23 @@ func TestParser_UnicodeContent(t *testing.T) {
 	}
 }
 
+func TestParser_InputCharacterUsage(t *testing.T) {
+	body := `{"model":"tts-1","input":"Hello 世界"}`
+	parser := &Parser{}
+
+	meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.MeteredUsage.InputCharacters != 8 {
+		t.Errorf("InputCharacters = %d, want 8", meta.MeteredUsage.InputCharacters)
+	}
+	if !meta.MeteredUsage.HasInputCharacters {
+		t.Error("HasInputCharacters = false, want true")
+	}
+}
+
 func TestEnricher_SetsHeaders(t *testing.T) {
 	enricher := NewEnricher("test-api-key")
 	req := httptest.NewRequest("POST", "https://api.example.com/v1/chat/completions", nil)
@@ -165,6 +182,21 @@ func TestEnricher_SetsHeaders(t *testing.T) {
 	}
 	if ct := req.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+}
+
+func TestEnricher_PreservesExistingContentType(t *testing.T) {
+	enricher := NewEnricher("test-api-key")
+	req := httptest.NewRequest("POST", "https://api.example.com/v1/audio/transcriptions", nil)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+
+	err := enricher.Enrich(req, llmproxy.BodyMetadata{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ct := req.Header.Get("Content-Type"); ct != "multipart/form-data; boundary=test" {
+		t.Errorf("Content-Type = %q, want multipart form", ct)
 	}
 }
 

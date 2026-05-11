@@ -53,6 +53,99 @@ func TestExtractor_ReasoningTokens(t *testing.T) {
 	}
 }
 
+func TestExtractor_ImageGenerationUsage(t *testing.T) {
+	body := `{
+		"created": 1778342333,
+		"data": [{"b64_json": "abc"}],
+		"usage": {
+			"input_tokens": 15,
+			"input_tokens_details": {
+				"image_tokens": 0,
+				"text_tokens": 15
+			},
+			"output_tokens": 272,
+			"output_tokens_details": {
+				"image_tokens": 272,
+				"text_tokens": 0
+			},
+			"total_tokens": 287
+		}
+	}`
+
+	extractor := NewExtractor()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if meta.Usage.PromptTokens != 15 {
+		t.Errorf("PromptTokens = %d, want 15", meta.Usage.PromptTokens)
+	}
+	if meta.Usage.CompletionTokens != 272 {
+		t.Errorf("CompletionTokens = %d, want 272", meta.Usage.CompletionTokens)
+	}
+	if meta.Usage.TotalTokens != 287 {
+		t.Errorf("TotalTokens = %d, want 287", meta.Usage.TotalTokens)
+	}
+	if meta.MeteredUsage.GeneratedImages != 1 {
+		t.Errorf("GeneratedImages = %d, want 1", meta.MeteredUsage.GeneratedImages)
+	}
+	if !meta.MeteredUsage.HasGeneratedImages {
+		t.Error("HasGeneratedImages = false, want true")
+	}
+}
+
+func TestExtractor_DurationUsage(t *testing.T) {
+	body := `{"text":"You","usage":{"type":"duration","seconds":1}}`
+
+	extractor := NewExtractor()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+	}
+
+	meta, _, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if meta.MeteredUsage.InputAudioSeconds != 1 {
+		t.Errorf("InputAudioSeconds = %f, want 1", meta.MeteredUsage.InputAudioSeconds)
+	}
+	if !meta.MeteredUsage.HasInputAudioSeconds {
+		t.Error("HasInputAudioSeconds = false, want true")
+	}
+}
+
+func TestExtractor_NonJSONResponsePassesThrough(t *testing.T) {
+	body := []byte{0xff, 0xfb, 0x90, 0x64}
+
+	extractor := NewExtractor()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"audio/mpeg"},
+		},
+		Body: io.NopCloser(bytes.NewReader(body)),
+	}
+
+	meta, raw, err := extractor.Extract(resp)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if !bytes.Equal(raw, body) {
+		t.Fatalf("raw body = %v, want %v", raw, body)
+	}
+	if meta.Custom == nil {
+		t.Fatal("expected custom metadata map")
+	}
+}
+
 func TestExtractor_ReasoningTokensZero(t *testing.T) {
 	body := `{
 		"id": "chatcmpl-abc",

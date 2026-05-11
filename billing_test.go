@@ -183,6 +183,74 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 	assertFloat(t, "TotalCost", result.TotalCost, 0)
 }
 
+func TestCalculateCost_PerMillionCharacters(t *testing.T) {
+	result := CalculateCostWithMeteredUsage(
+		"openai",
+		"tts-1",
+		CostInfo{Input: 15, Unit: "per_million_characters"},
+		0,
+		0,
+		nil,
+		MeteredUsage{InputCharacters: 10},
+	)
+
+	assertFloat(t, "InputCost", result.InputCost, 0.00015)
+	assertFloat(t, "TotalCost", result.TotalCost, 0.00015)
+	if result.InputQuantity != 10 {
+		t.Fatalf("InputQuantity = %f, want 10", result.InputQuantity)
+	}
+}
+
+func TestCalculateCost_PerMinuteAudio(t *testing.T) {
+	result := CalculateCostWithMeteredUsage(
+		"openai",
+		"whisper-1",
+		CostInfo{Input: 0.006, Unit: "per_minute_audio"},
+		0,
+		0,
+		nil,
+		MeteredUsage{InputAudioSeconds: 30},
+	)
+
+	assertFloat(t, "InputCost", result.InputCost, 0.003)
+	assertFloat(t, "TotalCost", result.TotalCost, 0.003)
+	if result.InputQuantity != 0.5 {
+		t.Fatalf("InputQuantity = %f, want 0.5", result.InputQuantity)
+	}
+}
+
+func TestCalculateCost_PerSecondVideo(t *testing.T) {
+	result := CalculateCostWithMeteredUsage(
+		"googleai",
+		"veo-3.1-generate-preview",
+		CostInfo{Output: 0.4, Unit: "per_second_720p_1080p_video"},
+		0,
+		0,
+		nil,
+		MeteredUsage{OutputVideoSeconds: 16},
+	)
+
+	assertFloat(t, "OutputCost", result.OutputCost, 6.4)
+	assertFloat(t, "TotalCost", result.TotalCost, 6.4)
+	if result.OutputQuantity != 16 {
+		t.Fatalf("OutputQuantity = %f, want 16", result.OutputQuantity)
+	}
+}
+
+func TestMergeMeteredUsage_ResponseZeroOverridesRequestEstimate(t *testing.T) {
+	merged := mergeMeteredUsage(
+		MeteredUsage{InputAudioSeconds: 30, HasInputAudioSeconds: true},
+		MeteredUsage{InputAudioSeconds: 0, HasInputAudioSeconds: true},
+	)
+
+	if merged.InputAudioSeconds != 0 {
+		t.Fatalf("InputAudioSeconds = %f, want response-reported zero", merged.InputAudioSeconds)
+	}
+	if !merged.HasInputAudioSeconds {
+		t.Fatal("HasInputAudioSeconds = false, want true")
+	}
+}
+
 func TestCalculateCost_MixedProviderCacheFields(t *testing.T) {
 	// Both CachedTokens and CacheReadInputTokens set (shouldn't happen, but test summing)
 	costInfo := CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}

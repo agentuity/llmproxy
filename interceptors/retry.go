@@ -53,7 +53,7 @@ func (i *RetryInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMetada
 			return lastResp, lastMeta, lastRawRespBody, lastErr
 		}
 
-		if lastResp != nil && lastResp.Body != nil {
+		if attempt < i.MaxAttempts && lastResp != nil && lastResp.Body != nil {
 			io.Copy(io.Discard, lastResp.Body)
 			lastResp.Body.Close()
 		}

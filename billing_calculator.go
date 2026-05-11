@@ -42,7 +42,8 @@ func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetad
 		}
 	}
 
-	result := CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
+	meteredUsage := mergeMeteredUsage(meta.MeteredUsage, respMeta.MeteredUsage)
+	result := CalculateCostWithMeteredUsage(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage, meteredUsage)
 
 	if respMeta.Custom == nil {
 		respMeta.Custom = make(map[string]any)
@@ -54,6 +55,37 @@ func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetad
 	}
 
 	return &result
+}
+
+func mergeMeteredUsage(requestUsage MeteredUsage, responseUsage MeteredUsage) MeteredUsage {
+	return MeteredUsage{
+		InputCharacters:       selectInt(responseUsage.InputCharacters, responseUsage.HasInputCharacters, requestUsage.InputCharacters),
+		OutputCharacters:      selectInt(responseUsage.OutputCharacters, responseUsage.HasOutputCharacters, requestUsage.OutputCharacters),
+		InputAudioSeconds:     selectFloat(responseUsage.InputAudioSeconds, responseUsage.HasInputAudioSeconds, requestUsage.InputAudioSeconds),
+		OutputAudioSeconds:    selectFloat(responseUsage.OutputAudioSeconds, responseUsage.HasOutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		OutputVideoSeconds:    selectFloat(responseUsage.OutputVideoSeconds, responseUsage.HasOutputVideoSeconds, requestUsage.OutputVideoSeconds),
+		GeneratedImages:       selectInt(responseUsage.GeneratedImages, responseUsage.HasGeneratedImages, requestUsage.GeneratedImages),
+		HasInputCharacters:    responseUsage.HasInputCharacters || requestUsage.HasInputCharacters,
+		HasOutputCharacters:   responseUsage.HasOutputCharacters || requestUsage.HasOutputCharacters,
+		HasInputAudioSeconds:  responseUsage.HasInputAudioSeconds || requestUsage.HasInputAudioSeconds,
+		HasOutputAudioSeconds: responseUsage.HasOutputAudioSeconds || requestUsage.HasOutputAudioSeconds,
+		HasOutputVideoSeconds: responseUsage.HasOutputVideoSeconds || requestUsage.HasOutputVideoSeconds,
+		HasGeneratedImages:    responseUsage.HasGeneratedImages || requestUsage.HasGeneratedImages,
+	}
+}
+
+func selectInt(responseValue int, responsePresent bool, requestValue int) int {
+	if responsePresent {
+		return responseValue
+	}
+	return requestValue
+}
+
+func selectFloat(responseValue float64, responsePresent bool, requestValue float64) float64 {
+	if responsePresent {
+		return responseValue
+	}
+	return requestValue
 }
 
 func (c *BillingCalculator) Lookup() CostLookup {

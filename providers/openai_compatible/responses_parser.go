@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"unicode/utf8"
 
 	"github.com/agentuity/llmproxy"
 )
@@ -33,6 +34,8 @@ func (p *ResponsesParser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []by
 		switch v := req.Input.(type) {
 		case string:
 			meta.Messages = []llmproxy.Message{{Role: "user", Content: v}}
+			meta.MeteredUsage.InputCharacters = utf8.RuneCountInString(v)
+			meta.MeteredUsage.HasInputCharacters = true
 		case []interface{}:
 			msgs := make([]llmproxy.Message, 0, len(v))
 			for _, item := range v {

@@ -30,15 +30,30 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 	}
 
 	var endpoint *url.URL
-	if meta.Stream {
+	apiType := resolveAPIType(meta.Custom["api_type"])
+	switch {
+	case apiType == llmproxy.APITypePredictLongRunning:
+		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:predictLongRunning", model))
+	case meta.Stream || apiType == llmproxy.APITypeStreamGenerateContent:
 		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:streamGenerateContent", model))
 		q := endpoint.Query()
 		q.Set("alt", "sse")
 		endpoint.RawQuery = q.Encode()
-	} else {
+	default:
 		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:generateContent", model))
 	}
 	return endpoint, nil
+}
+
+func resolveAPIType(value any) llmproxy.APIType {
+	switch v := value.(type) {
+	case llmproxy.APIType:
+		return v
+	case string:
+		return llmproxy.APIType(v)
+	default:
+		return ""
+	}
 }
 
 // NewResolver creates a new resolver with the given base URL.

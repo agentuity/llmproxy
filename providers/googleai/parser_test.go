@@ -94,6 +94,25 @@ func TestParser(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+
+	t.Run("parses video metered usage", func(t *testing.T) {
+		body := `{"instances":[{"prompt":"make a short clip"}],"parameters":{"durationSeconds":8,"sampleCount":2,"resolution":"720p"}}`
+		parser := &Parser{}
+
+		meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if meta.MeteredUsage.OutputVideoSeconds != 16 {
+			t.Errorf("OutputVideoSeconds = %f, want 16", meta.MeteredUsage.OutputVideoSeconds)
+		}
+		if !meta.MeteredUsage.HasOutputVideoSeconds {
+			t.Error("HasOutputVideoSeconds = false, want true")
+		}
+		if _, ok := meta.Custom["parameters"]; ok {
+			t.Error("parameters should not be captured as a custom field")
+		}
+	})
 }
 
 func TestEnricher(t *testing.T) {
@@ -159,6 +178,46 @@ func TestResolver(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		expected := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+		if u.String() != expected {
+			t.Errorf("expected %s, got %s", expected, u.String())
+		}
+	})
+
+	t.Run("resolves long-running endpoint from string api type", func(t *testing.T) {
+		resolver, err := NewResolver("https://generativelanguage.googleapis.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		meta := llmproxy.BodyMetadata{
+			Model:  "veo-3.1-generate-preview",
+			Custom: map[string]any{"api_type": string(llmproxy.APITypePredictLongRunning)},
+		}
+		u, err := resolver.Resolve(meta)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning"
+		if u.String() != expected {
+			t.Errorf("expected %s, got %s", expected, u.String())
+		}
+	})
+
+	t.Run("resolves streaming endpoint from string api type", func(t *testing.T) {
+		resolver, err := NewResolver("https://generativelanguage.googleapis.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		meta := llmproxy.BodyMetadata{
+			Model:  "gemini-pro",
+			Custom: map[string]any{"api_type": string(llmproxy.APITypeStreamGenerateContent)},
+		}
+		u, err := resolver.Resolve(meta)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:streamGenerateContent?alt=sse"
 		if u.String() != expected {
 			t.Errorf("expected %s, got %s", expected, u.String())
 		}

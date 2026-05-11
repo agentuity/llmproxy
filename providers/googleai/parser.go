@@ -41,11 +41,18 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		return llmproxy.BodyMetadata{}, nil, err
 	}
 
+	meteredUsage := llmproxy.MeteredUsage{}
+	if outputVideoSeconds := req.VideoOutputSeconds(); outputVideoSeconds != 0 {
+		meteredUsage.OutputVideoSeconds = outputVideoSeconds
+		meteredUsage.HasOutputVideoSeconds = true
+	}
+
 	meta := llmproxy.BodyMetadata{
-		Model:     req.Model,
-		Messages:  make([]llmproxy.Message, 0, len(req.Contents)),
-		MaxTokens: req.GenerationConfig.MaxOutputTokens,
-		Custom:    make(map[string]any),
+		Model:        req.Model,
+		Messages:     make([]llmproxy.Message, 0, len(req.Contents)),
+		MaxTokens:    req.GenerationConfig.MaxOutputTokens,
+		MeteredUsage: meteredUsage,
+		Custom:       make(map[string]any),
 	}
 
 	for _, content := range req.Contents {
@@ -90,6 +97,8 @@ func extractTextFromParts(parts []Part) string {
 type Request struct {
 	Model             string                 `json:"model,omitempty"`
 	Contents          []Content              `json:"contents,omitempty"`
+	Instances         []VideoInstance        `json:"instances,omitempty"`
+	Parameters        VideoParameters        `json:"parameters,omitempty"`
 	SystemInstruction *Content               `json:"systemInstruction,omitempty"`
 	GenerationConfig  GenerationConfig       `json:"generationConfig,omitempty"`
 	SafetySettings    []SafetySetting        `json:"safetySettings,omitempty"`
@@ -130,6 +139,29 @@ type SafetySetting struct {
 	Threshold string `json:"threshold"`
 }
 
+// VideoInstance represents a Google long-running video generation prompt.
+type VideoInstance struct {
+	Prompt string `json:"prompt,omitempty"`
+}
+
+// VideoParameters contains Google long-running video generation controls.
+type VideoParameters struct {
+	SampleCount     int     `json:"sampleCount,omitempty"`
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
+	Resolution      string  `json:"resolution,omitempty"`
+}
+
+func (r Request) VideoOutputSeconds() float64 {
+	if r.Parameters.DurationSeconds <= 0 {
+		return 0
+	}
+	sampleCount := r.Parameters.SampleCount
+	if sampleCount <= 0 {
+		sampleCount = 1
+	}
+	return r.Parameters.DurationSeconds * float64(sampleCount)
+}
+
 // UnmarshalJSON captures unknown fields into Custom.
 func (r *Request) UnmarshalJSON(data []byte) error {
 	type Alias Request
@@ -149,7 +181,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 
 	r.Custom = make(map[string]interface{})
 	known := map[string]bool{
-		"model": true, "contents": true, "systemInstruction": true,
+		"model": true, "contents": true, "instances": true, "parameters": true, "systemInstruction": true,
 		"generationConfig": true, "safetySettings": true, "tools": true,
 		"toolConfig": true,
 	}

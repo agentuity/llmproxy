@@ -101,7 +101,8 @@ func (e *StreamingMultiAPIExtractor) ExtractStreamingWithController(resp *http.R
 
 	if resp.Request != nil {
 		metaCtx := llmproxy.GetMetaFromContext(resp.Request.Context())
-		if apiType, ok := metaCtx.Meta.Custom["api_type"].(llmproxy.APIType); ok && apiType == llmproxy.APITypeResponses {
+		apiType := metaCtx.Meta.Custom["api_type"]
+		if apiType == llmproxy.APITypeResponses || apiType == string(llmproxy.APITypeResponses) {
 			return e.responsesStreaming.ExtractStreamingWithController(resp, w, rc)
 		}
 	}

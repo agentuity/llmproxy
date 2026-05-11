@@ -50,7 +50,7 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 				cacheUsage = &usage
 			}
 		}
-		result := llmproxy.CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
+		result := llmproxy.CalculateCostWithMeteredUsage(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage, mergeMeteredUsage(meta.MeteredUsage, respMeta.MeteredUsage))
 		if respMeta.Custom == nil {
 			respMeta.Custom = make(map[string]any)
 		}
@@ -61,6 +61,37 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 	}
 
 	return resp, respMeta, rawRespBody, nil
+}
+
+func mergeMeteredUsage(requestUsage llmproxy.MeteredUsage, responseUsage llmproxy.MeteredUsage) llmproxy.MeteredUsage {
+	return llmproxy.MeteredUsage{
+		InputCharacters:       selectInt(responseUsage.InputCharacters, responseUsage.HasInputCharacters, requestUsage.InputCharacters),
+		OutputCharacters:      selectInt(responseUsage.OutputCharacters, responseUsage.HasOutputCharacters, requestUsage.OutputCharacters),
+		InputAudioSeconds:     selectFloat(responseUsage.InputAudioSeconds, responseUsage.HasInputAudioSeconds, requestUsage.InputAudioSeconds),
+		OutputAudioSeconds:    selectFloat(responseUsage.OutputAudioSeconds, responseUsage.HasOutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		OutputVideoSeconds:    selectFloat(responseUsage.OutputVideoSeconds, responseUsage.HasOutputVideoSeconds, requestUsage.OutputVideoSeconds),
+		GeneratedImages:       selectInt(responseUsage.GeneratedImages, responseUsage.HasGeneratedImages, requestUsage.GeneratedImages),
+		HasInputCharacters:    responseUsage.HasInputCharacters || requestUsage.HasInputCharacters,
+		HasOutputCharacters:   responseUsage.HasOutputCharacters || requestUsage.HasOutputCharacters,
+		HasInputAudioSeconds:  responseUsage.HasInputAudioSeconds || requestUsage.HasInputAudioSeconds,
+		HasOutputAudioSeconds: responseUsage.HasOutputAudioSeconds || requestUsage.HasOutputAudioSeconds,
+		HasOutputVideoSeconds: responseUsage.HasOutputVideoSeconds || requestUsage.HasOutputVideoSeconds,
+		HasGeneratedImages:    responseUsage.HasGeneratedImages || requestUsage.HasGeneratedImages,
+	}
+}
+
+func selectInt(responseValue int, responsePresent bool, requestValue int) int {
+	if responsePresent {
+		return responseValue
+	}
+	return requestValue
+}
+
+func selectFloat(responseValue float64, responsePresent bool, requestValue float64) float64 {
+	if responsePresent {
+		return responseValue
+	}
+	return requestValue
 }
 
 // NewBilling creates a new billing interceptor with the given lookup function.

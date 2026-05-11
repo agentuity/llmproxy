@@ -713,6 +713,30 @@ func TestExtractUsageFromResponsesEvent(t *testing.T) {
 			expectedTotal:      15,
 		},
 		{
+			name: "completed with top-level usage",
+			event: &ResponsesStreamEvent{
+				Type: "response.completed",
+				Usage: &ResponsesStreamUsage{
+					InputTokens:  11,
+					OutputTokens: 6,
+					TotalTokens:  17,
+				},
+			},
+			expectedPrompt:     11,
+			expectedCompletion: 6,
+			expectedTotal:      17,
+		},
+		{
+			name: "incomplete with usage",
+			event: &ResponsesStreamEvent{
+				Type:     "response.incomplete",
+				Response: []byte(`{"usage":{"input_tokens":13,"output_tokens":8,"total_tokens":21}}`),
+			},
+			expectedPrompt:     13,
+			expectedCompletion: 8,
+			expectedTotal:      21,
+		},
+		{
 			name: "completed without usage",
 			event: &ResponsesStreamEvent{
 				Type:     "response.completed",

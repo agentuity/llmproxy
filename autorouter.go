@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/agentuity/go-common/slice"
@@ -37,6 +40,7 @@ type AutoRouter struct {
 	registry            Registry
 	detector            ProviderDetector
 	modelProviderLookup ModelProviderLookup
+	modelMetadataLookup ModelMetadataLookup
 	interceptors        InterceptorChain
 	client              *http.Client
 	fallbackProvider    Provider
@@ -70,6 +74,10 @@ func WithAutoRouterFallbackProvider(p Provider) AutoRouterOption {
 
 func WithAutoRouterModelProviderLookup(lookup ModelProviderLookup) AutoRouterOption {
 	return func(a *AutoRouter) { a.modelProviderLookup = lookup }
+}
+
+func WithAutoRouterModelMetadataLookup(lookup ModelMetadataLookup) AutoRouterOption {
+	return func(a *AutoRouter) { a.modelMetadataLookup = lookup }
 }
 
 func WithAutoRouterBillingCalculator(calculator *BillingCalculator) AutoRouterOption {
@@ -119,12 +127,9 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 	}
 	req.Body.Close()
 
-	var raw map[string]any
-	var model string
-	if err := json.Unmarshal(body, &raw); err == nil {
-		if m, ok := raw["model"].(string); ok {
-			model = m
-		}
+	model, raw := extractRequestModel(req.Header, body)
+	if model == "" {
+		model = extractModelFromPath(req.URL.Path)
 	}
 
 	hint := ProviderHint{
@@ -135,6 +140,9 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 
 	if providerName == "" && a.modelProviderLookup != nil && model != "" {
 		providerName = a.modelProviderLookup(model)
+	}
+	if providerName == "" {
+		providerName = providerFromAPIType(DetectAPITypeFromPath(req.URL.Path))
 	}
 
 	var provider Provider
@@ -161,16 +169,31 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		if err != nil {
 			return nil, ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
 		}
+	} else if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
+		if rewrittenBody, contentType, ok := rewriteRequestModel(req.Header.Get("Content-Type"), body, strippedModel); ok {
+			body = rewrittenBody
+			req.Header.Set("Content-Type", contentType)
+		}
+		model = strippedModel
 	}
 
 	apiType := DetectAPITypeFromPath(req.URL.Path)
 	if apiType == "" {
 		apiType = DetectAPITypeFromBodyAndProvider(body, providerName)
 	}
+	if err := a.validateModelSurface(providerName, model, apiType); err != nil {
+		return nil, ResponseMetadata{}, err
+	}
 
 	meta, _, err := provider.BodyParser().Parse(io.NopCloser(bytes.NewReader(body)))
 	if err != nil {
-		return nil, ResponseMetadata{}, err
+		if !canBuildPassthroughMetadata(apiType, model) {
+			return nil, ResponseMetadata{}, err
+		}
+		meta = BodyMetadata{Model: model, Custom: make(map[string]any)}
+	}
+	if meta.Model == "" && model != "" {
+		meta.Model = model
 	}
 
 	if meta.Custom == nil {
@@ -250,12 +273,9 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 	}
 	req.Body.Close()
 
-	var raw map[string]any
-	var model string
-	if err := json.Unmarshal(body, &raw); err == nil {
-		if m, ok := raw["model"].(string); ok {
-			model = m
-		}
+	model, raw := extractRequestModel(req.Header, body)
+	if model == "" {
+		model = extractModelFromPath(req.URL.Path)
 	}
 
 	hint := ProviderHint{
@@ -266,6 +286,9 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 
 	if providerName == "" && a.modelProviderLookup != nil && model != "" {
 		providerName = a.modelProviderLookup(model)
+	}
+	if providerName == "" {
+		providerName = providerFromAPIType(DetectAPITypeFromPath(req.URL.Path))
 	}
 
 	var provider Provider
@@ -284,6 +307,9 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 	apiType := DetectAPITypeFromPath(req.URL.Path)
 	if apiType == "" {
 		apiType = DetectAPITypeFromBodyAndProvider(body, providerName)
+	}
+	if err := a.validateModelSurface(providerName, model, apiType); err != nil {
+		return ResponseMetadata{}, err
 	}
 
 	if raw != nil {
@@ -310,11 +336,23 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		if err != nil {
 			return ResponseMetadata{}, fmt.Errorf("failed to marshal request body: %w", err)
 		}
+	} else if strippedModel, hasPrefix := stripProviderPrefix(model); hasPrefix {
+		if rewrittenBody, contentType, ok := rewriteRequestModel(req.Header.Get("Content-Type"), body, strippedModel); ok {
+			body = rewrittenBody
+			req.Header.Set("Content-Type", contentType)
+		}
+		model = strippedModel
 	}
 
 	meta, _, err := provider.BodyParser().Parse(io.NopCloser(bytes.NewReader(body)))
 	if err != nil {
-		return ResponseMetadata{}, err
+		if !canBuildPassthroughMetadata(apiType, model) {
+			return ResponseMetadata{}, err
+		}
+		meta = BodyMetadata{Model: model, Custom: make(map[string]any)}
+	}
+	if meta.Model == "" && model != "" {
+		meta.Model = model
 	}
 
 	if meta.Custom == nil {
@@ -373,7 +411,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 
 	// Declare HTTP trailers for billing headers (must be before WriteHeader)
 	if a.billingCalculator != nil {
-		w.Header().Set("Trailer", "X-Gateway-Cost,X-Gateway-Prompt-Tokens,X-Gateway-Completion-Tokens")
+		w.Header().Set("Trailer", gatewayBillingTrailerHeader())
 	}
 
 	copyResponseHeaders(w, upstreamResp.Header)
@@ -413,7 +451,8 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 			w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
 			w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
 			w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
-			if sseWriter != nil && sseWriter.HasTerminal() {
+			setGatewayMeteredBillingHeaders(w.Header(), billing)
+			if sseWriter != nil {
 				if err := writeGatewayMetadataEvent(w, rc, billing); err != nil {
 					return respMeta, err
 				}
@@ -487,6 +526,9 @@ func writeGatewayMetadataEvent(w http.ResponseWriter, rc *http.ResponseControlle
 				"total":            billing.TotalCost,
 				"promptTokens":     billing.PromptTokens,
 				"completionTokens": billing.CompletionTokens,
+				"unit":             billing.Unit,
+				"inputQuantity":    billing.InputQuantity,
+				"outputQuantity":   billing.OutputQuantity,
 			},
 		},
 	}
@@ -510,6 +552,29 @@ func writeGatewayMetadataEvent(w http.ResponseWriter, rc *http.ResponseControlle
 	}
 
 	return rc.Flush()
+}
+
+func gatewayBillingTrailerHeader() string {
+	return strings.Join([]string{
+		"X-Gateway-Cost",
+		"X-Gateway-Prompt-Tokens",
+		"X-Gateway-Completion-Tokens",
+		"X-Gateway-Billing-Unit",
+		"X-Gateway-Input-Quantity",
+		"X-Gateway-Output-Quantity",
+	}, ",")
+}
+
+func setGatewayMeteredBillingHeaders(header http.Header, billing BillingResult) {
+	if billing.Unit != "" {
+		header.Set("X-Gateway-Billing-Unit", billing.Unit)
+	}
+	if billing.InputQuantity != 0 {
+		header.Set("X-Gateway-Input-Quantity", fmt.Sprintf("%.6f", billing.InputQuantity))
+	}
+	if billing.OutputQuantity != 0 {
+		header.Set("X-Gateway-Output-Quantity", fmt.Sprintf("%.6f", billing.OutputQuantity))
+	}
 }
 
 func (a *AutoRouter) streamResponseWithFlush(r io.Reader, w http.ResponseWriter, rc *http.ResponseController, extractor ResponseExtractor) (ResponseMetadata, error) {
@@ -574,6 +639,10 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var raw map[string]any
 	var isStreamingRequest bool
+	if DetectAPITypeFromPath(r.URL.Path) == APITypeStreamGenerateContent ||
+		strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		isStreamingRequest = true
+	}
 	if err := json.Unmarshal(body, &raw); err == nil {
 		if stream, ok := raw["stream"].(bool); ok && stream {
 			isStreamingRequest = true
@@ -607,6 +676,7 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Gateway-Cost", fmt.Sprintf("%.6f", billing.TotalCost))
 		w.Header().Set("X-Gateway-Prompt-Tokens", fmt.Sprintf("%d", billing.PromptTokens))
 		w.Header().Set("X-Gateway-Completion-Tokens", fmt.Sprintf("%d", billing.CompletionTokens))
+		setGatewayMeteredBillingHeaders(w.Header(), billing)
 	}
 
 	w.WriteHeader(resp.StatusCode)
@@ -687,6 +757,188 @@ var knownProviderPrefixes = map[string]bool{
 	"deepseek":   true,
 }
 
+func (a *AutoRouter) validateModelSurface(providerName string, model string, apiType APIType) error {
+	if a == nil || a.modelMetadataLookup == nil || model == "" {
+		return nil
+	}
+	lookupModel := model
+	if stripped, ok := stripProviderPrefix(lookupModel); ok {
+		lookupModel = stripped
+	}
+	metadata, ok := a.modelMetadataLookup(providerName, lookupModel)
+	if !ok {
+		return nil
+	}
+	return validateAPITypeAgainstModel(apiType, providerName, lookupModel, metadata)
+}
+
+func providerFromAPIType(apiType APIType) string {
+	switch apiType {
+	case APITypeGenerateContent, APITypeStreamGenerateContent, APITypePredictLongRunning:
+		return "googleai"
+	default:
+		return ""
+	}
+}
+
+func extractRequestModel(headers http.Header, body []byte) (string, map[string]any) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if model, ok := raw["model"].(string); ok {
+			return model, raw
+		}
+		return "", raw
+	}
+
+	contentType := headers.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", nil
+	}
+
+	switch mediaType {
+	case "multipart/form-data":
+		boundary := params["boundary"]
+		if boundary == "" {
+			return "", nil
+		}
+		return extractMultipartModel(body, boundary), nil
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return "", nil
+		}
+		return values.Get("model"), nil
+	default:
+		return "", nil
+	}
+}
+
+func extractMultipartModel(body []byte, boundary string) string {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			return ""
+		}
+		if part.FormName() != "model" {
+			_ = part.Close()
+			continue
+		}
+		data, err := io.ReadAll(part)
+		_ = part.Close()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	}
+}
+
+func rewriteRequestModel(contentType string, body []byte, model string) ([]byte, string, bool) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", false
+	}
+
+	switch mediaType {
+	case "multipart/form-data":
+		boundary := params["boundary"]
+		if boundary == "" {
+			return nil, "", false
+		}
+		rewrittenBody, rewrittenContentType, err := rewriteMultipartModel(body, boundary, model)
+		if err != nil {
+			return nil, "", false
+		}
+		return rewrittenBody, rewrittenContentType, true
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil, "", false
+		}
+		values.Set("model", model)
+		return []byte(values.Encode()), contentType, true
+	default:
+		return nil, "", false
+	}
+}
+
+func rewriteMultipartModel(body []byte, boundary string, model string) ([]byte, string, error) {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var output bytes.Buffer
+	writer := multipart.NewWriter(&output)
+	wroteModel := false
+
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, "", err
+		}
+
+		if part.FormName() == "model" {
+			if err := writer.WriteField("model", model); err != nil {
+				_ = part.Close()
+				return nil, "", err
+			}
+			wroteModel = true
+			_ = part.Close()
+			continue
+		}
+
+		dst, err := writer.CreatePart(part.Header)
+		if err != nil {
+			_ = part.Close()
+			return nil, "", err
+		}
+		if _, err := io.Copy(dst, part); err != nil {
+			_ = part.Close()
+			return nil, "", err
+		}
+		_ = part.Close()
+	}
+
+	if !wroteModel {
+		if err := writer.WriteField("model", model); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return output.Bytes(), writer.FormDataContentType(), nil
+}
+
+func canBuildPassthroughMetadata(apiType APIType, model string) bool {
+	if model == "" {
+		return false
+	}
+	switch apiType {
+	case APITypeAudioTranscriptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func extractModelFromPath(path string) string {
+	const marker = "/models/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	value := path[idx+len(marker):]
+	if slash := strings.Index(value, "/"); slash >= 0 {
+		value = value[:slash]
+	}
+	if colon := strings.Index(value, ":"); colon >= 0 {
+		value = value[:colon]
+	}
+	return strings.TrimSpace(value)
+}
+
 func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
 	idx := strings.Index(model, "/")
 	if idx < 0 {
@@ -704,6 +956,11 @@ func stripProviderPrefix(model string) (stripped string, hasPrefix bool) {
 }
 
 func normalizeProviderRequest(raw map[string]any, providerName string) {
+	if providerName == "googleai" {
+		normalizeGoogleAIRequest(raw)
+		return
+	}
+
 	if providerName != "deepseek" {
 		return
 	}
@@ -733,5 +990,58 @@ func normalizeProviderRequest(raw map[string]any, providerName string) {
 			delete(raw, "reasoning_effort")
 			raw["thinking"] = map[string]any{"type": "disabled"}
 		}
+	}
+}
+
+func normalizeGoogleAIRequest(raw map[string]any) {
+	delete(raw, "stream")
+
+	if maxTokens, ok := raw["max_tokens"]; ok {
+		generationConfig, _ := raw["generationConfig"].(map[string]any)
+		if generationConfig == nil {
+			generationConfig = make(map[string]any)
+			raw["generationConfig"] = generationConfig
+		}
+		if _, exists := generationConfig["maxOutputTokens"]; !exists {
+			generationConfig["maxOutputTokens"] = maxTokens
+		}
+		delete(raw, "max_tokens")
+	}
+
+	if systemInstruction, ok := raw["system_instruction"].(string); ok {
+		if _, exists := raw["systemInstruction"]; !exists && systemInstruction != "" {
+			raw["systemInstruction"] = map[string]any{
+				"parts": []any{map[string]any{"text": systemInstruction}},
+			}
+		}
+		delete(raw, "system_instruction")
+	}
+
+	if messages, ok := raw["messages"].([]any); ok {
+		if _, exists := raw["contents"]; !exists {
+			contents := make([]any, 0, len(messages))
+			for _, item := range messages {
+				message, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				content, ok := message["content"].(string)
+				if !ok || content == "" {
+					continue
+				}
+				role, _ := message["role"].(string)
+				if role == "assistant" {
+					role = "model"
+				} else {
+					role = "user"
+				}
+				contents = append(contents, map[string]any{
+					"role":  role,
+					"parts": []any{map[string]any{"text": content}},
+				})
+			}
+			raw["contents"] = contents
+		}
+		delete(raw, "messages")
 	}
 }
