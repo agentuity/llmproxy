@@ -237,6 +237,20 @@ func TestCalculateCost_PerSecondVideo(t *testing.T) {
 	}
 }
 
+func TestMergeMeteredUsage_ResponseZeroOverridesRequestEstimate(t *testing.T) {
+	merged := mergeMeteredUsage(
+		MeteredUsage{InputAudioSeconds: 30, HasInputAudioSeconds: true},
+		MeteredUsage{InputAudioSeconds: 0, HasInputAudioSeconds: true},
+	)
+
+	if merged.InputAudioSeconds != 0 {
+		t.Fatalf("InputAudioSeconds = %f, want response-reported zero", merged.InputAudioSeconds)
+	}
+	if !merged.HasInputAudioSeconds {
+		t.Fatal("HasInputAudioSeconds = false, want true")
+	}
+}
+
 func TestCalculateCost_MixedProviderCacheFields(t *testing.T) {
 	// Both CachedTokens and CacheReadInputTokens set (shouldn't happen, but test summing)
 	costInfo := CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}

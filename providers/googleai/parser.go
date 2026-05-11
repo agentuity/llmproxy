@@ -41,14 +41,18 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		return llmproxy.BodyMetadata{}, nil, err
 	}
 
+	meteredUsage := llmproxy.MeteredUsage{}
+	if outputVideoSeconds := req.VideoOutputSeconds(); outputVideoSeconds != 0 {
+		meteredUsage.OutputVideoSeconds = outputVideoSeconds
+		meteredUsage.HasOutputVideoSeconds = true
+	}
+
 	meta := llmproxy.BodyMetadata{
-		Model:     req.Model,
-		Messages:  make([]llmproxy.Message, 0, len(req.Contents)),
-		MaxTokens: req.GenerationConfig.MaxOutputTokens,
-		MeteredUsage: llmproxy.MeteredUsage{
-			OutputVideoSeconds: req.VideoOutputSeconds(),
-		},
-		Custom: make(map[string]any),
+		Model:        req.Model,
+		Messages:     make([]llmproxy.Message, 0, len(req.Contents)),
+		MaxTokens:    req.GenerationConfig.MaxOutputTokens,
+		MeteredUsage: meteredUsage,
+		Custom:       make(map[string]any),
 	}
 
 	for _, content := range req.Contents {

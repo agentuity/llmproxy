@@ -95,6 +95,9 @@ func TestExtractor_ImageGenerationUsage(t *testing.T) {
 	if meta.MeteredUsage.GeneratedImages != 1 {
 		t.Errorf("GeneratedImages = %d, want 1", meta.MeteredUsage.GeneratedImages)
 	}
+	if !meta.MeteredUsage.HasGeneratedImages {
+		t.Error("HasGeneratedImages = false, want true")
+	}
 }
 
 func TestExtractor_DurationUsage(t *testing.T) {
@@ -113,6 +116,9 @@ func TestExtractor_DurationUsage(t *testing.T) {
 	}
 	if meta.MeteredUsage.InputAudioSeconds != 1 {
 		t.Errorf("InputAudioSeconds = %f, want 1", meta.MeteredUsage.InputAudioSeconds)
+	}
+	if !meta.MeteredUsage.HasInputAudioSeconds {
+		t.Error("HasInputAudioSeconds = false, want true")
 	}
 }
 

@@ -163,6 +163,9 @@ func TestParser_InputCharacterUsage(t *testing.T) {
 	if meta.MeteredUsage.InputCharacters != 8 {
 		t.Errorf("InputCharacters = %d, want 8", meta.MeteredUsage.InputCharacters)
 	}
+	if !meta.MeteredUsage.HasInputCharacters {
+		t.Error("HasInputCharacters = false, want true")
+	}
 }
 
 func TestEnricher_SetsHeaders(t *testing.T) {

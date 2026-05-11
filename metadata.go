@@ -130,6 +130,13 @@ type MeteredUsage struct {
 	OutputAudioSeconds float64 `json:"output_audio_seconds,omitempty"`
 	OutputVideoSeconds float64 `json:"output_video_seconds,omitempty"`
 	GeneratedImages    int     `json:"generated_images,omitempty"`
+
+	HasInputCharacters    bool `json:"-"`
+	HasOutputCharacters   bool `json:"-"`
+	HasInputAudioSeconds  bool `json:"-"`
+	HasOutputAudioSeconds bool `json:"-"`
+	HasOutputVideoSeconds bool `json:"-"`
+	HasGeneratedImages    bool `json:"-"`
 }
 
 // CacheUsage tracks prompt caching token consumption.

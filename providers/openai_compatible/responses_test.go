@@ -59,6 +59,9 @@ func TestResponsesParser(t *testing.T) {
 	if meta.MeteredUsage.InputCharacters != 13 {
 		t.Errorf("InputCharacters = %d, want 13", meta.MeteredUsage.InputCharacters)
 	}
+	if !meta.MeteredUsage.HasInputCharacters {
+		t.Error("HasInputCharacters = false, want true")
+	}
 
 	if len(data) == 0 {
 		t.Error("data is empty")

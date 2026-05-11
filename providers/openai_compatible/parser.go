@@ -40,15 +40,19 @@ func (p *Parser) Parse(body io.ReadCloser) (llmproxy.BodyMetadata, []byte, error
 		return llmproxy.BodyMetadata{}, nil, err
 	}
 
+	meteredUsage := llmproxy.MeteredUsage{}
+	if req.Input != "" {
+		meteredUsage.InputCharacters = utf8.RuneCountInString(req.Input)
+		meteredUsage.HasInputCharacters = true
+	}
+
 	meta := llmproxy.BodyMetadata{
-		Model:     req.Model,
-		Messages:  req.Messages,
-		MaxTokens: req.MaxTokens,
-		Stream:    req.Stream,
-		MeteredUsage: llmproxy.MeteredUsage{
-			InputCharacters: utf8.RuneCountInString(req.Input),
-		},
-		Custom: make(map[string]any),
+		Model:        req.Model,
+		Messages:     req.Messages,
+		MaxTokens:    req.MaxTokens,
+		Stream:       req.Stream,
+		MeteredUsage: meteredUsage,
+		Custom:       make(map[string]any),
 	}
 
 	for k, v := range req.Custom {

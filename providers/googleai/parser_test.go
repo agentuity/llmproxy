@@ -106,6 +106,9 @@ func TestParser(t *testing.T) {
 		if meta.MeteredUsage.OutputVideoSeconds != 16 {
 			t.Errorf("OutputVideoSeconds = %f, want 16", meta.MeteredUsage.OutputVideoSeconds)
 		}
+		if !meta.MeteredUsage.HasOutputVideoSeconds {
+			t.Error("HasOutputVideoSeconds = false, want true")
+		}
 		if _, ok := meta.Custom["parameters"]; ok {
 			t.Error("parameters should not be captured as a custom field")
 		}

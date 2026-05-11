@@ -53,9 +53,14 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		Choices: make([]llmproxy.Choice, len(openaiResp.Choices)),
 		Custom:  make(map[string]any),
 	}
-	meta.MeteredUsage = llmproxy.MeteredUsage{
-		InputAudioSeconds: openaiResp.Usage.InputAudioSeconds(),
-		GeneratedImages:   len(openaiResp.Data),
+	meta.MeteredUsage = llmproxy.MeteredUsage{}
+	if openaiResp.Usage.Type == "duration" {
+		meta.MeteredUsage.InputAudioSeconds = openaiResp.Usage.Seconds
+		meta.MeteredUsage.HasInputAudioSeconds = true
+	}
+	if openaiResp.Data != nil {
+		meta.MeteredUsage.GeneratedImages = len(openaiResp.Data)
+		meta.MeteredUsage.HasGeneratedImages = true
 	}
 
 	promptDetails := openaiResp.Usage.PromptTokensDetails

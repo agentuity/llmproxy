@@ -59,31 +59,33 @@ func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetad
 
 func mergeMeteredUsage(requestUsage MeteredUsage, responseUsage MeteredUsage) MeteredUsage {
 	return MeteredUsage{
-		InputCharacters:    firstNonZeroInt(responseUsage.InputCharacters, requestUsage.InputCharacters),
-		OutputCharacters:   firstNonZeroInt(responseUsage.OutputCharacters, requestUsage.OutputCharacters),
-		InputAudioSeconds:  firstNonZeroFloat(responseUsage.InputAudioSeconds, requestUsage.InputAudioSeconds),
-		OutputAudioSeconds: firstNonZeroFloat(responseUsage.OutputAudioSeconds, requestUsage.OutputAudioSeconds),
-		OutputVideoSeconds: firstNonZeroFloat(responseUsage.OutputVideoSeconds, requestUsage.OutputVideoSeconds),
-		GeneratedImages:    firstNonZeroInt(responseUsage.GeneratedImages, requestUsage.GeneratedImages),
+		InputCharacters:       selectInt(responseUsage.InputCharacters, responseUsage.HasInputCharacters, requestUsage.InputCharacters),
+		OutputCharacters:      selectInt(responseUsage.OutputCharacters, responseUsage.HasOutputCharacters, requestUsage.OutputCharacters),
+		InputAudioSeconds:     selectFloat(responseUsage.InputAudioSeconds, responseUsage.HasInputAudioSeconds, requestUsage.InputAudioSeconds),
+		OutputAudioSeconds:    selectFloat(responseUsage.OutputAudioSeconds, responseUsage.HasOutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		OutputVideoSeconds:    selectFloat(responseUsage.OutputVideoSeconds, responseUsage.HasOutputVideoSeconds, requestUsage.OutputVideoSeconds),
+		GeneratedImages:       selectInt(responseUsage.GeneratedImages, responseUsage.HasGeneratedImages, requestUsage.GeneratedImages),
+		HasInputCharacters:    responseUsage.HasInputCharacters || requestUsage.HasInputCharacters,
+		HasOutputCharacters:   responseUsage.HasOutputCharacters || requestUsage.HasOutputCharacters,
+		HasInputAudioSeconds:  responseUsage.HasInputAudioSeconds || requestUsage.HasInputAudioSeconds,
+		HasOutputAudioSeconds: responseUsage.HasOutputAudioSeconds || requestUsage.HasOutputAudioSeconds,
+		HasOutputVideoSeconds: responseUsage.HasOutputVideoSeconds || requestUsage.HasOutputVideoSeconds,
+		HasGeneratedImages:    responseUsage.HasGeneratedImages || requestUsage.HasGeneratedImages,
 	}
 }
 
-func firstNonZeroInt(values ...int) int {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
+func selectInt(responseValue int, responsePresent bool, requestValue int) int {
+	if responsePresent {
+		return responseValue
 	}
-	return 0
+	return requestValue
 }
 
-func firstNonZeroFloat(values ...float64) float64 {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
+func selectFloat(responseValue float64, responsePresent bool, requestValue float64) float64 {
+	if responsePresent {
+		return responseValue
 	}
-	return 0
+	return requestValue
 }
 
 func (c *BillingCalculator) Lookup() CostLookup {
