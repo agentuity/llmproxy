@@ -94,6 +94,22 @@ func TestParser(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+
+	t.Run("parses video metered usage", func(t *testing.T) {
+		body := `{"instances":[{"prompt":"make a short clip"}],"parameters":{"durationSeconds":8,"sampleCount":2,"resolution":"720p"}}`
+		parser := &Parser{}
+
+		meta, _, err := parser.Parse(io.NopCloser(bytes.NewReader([]byte(body))))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if meta.MeteredUsage.OutputVideoSeconds != 16 {
+			t.Errorf("OutputVideoSeconds = %f, want 16", meta.MeteredUsage.OutputVideoSeconds)
+		}
+		if _, ok := meta.Custom["parameters"]; ok {
+			t.Error("parameters should not be captured as a custom field")
+		}
+	})
 }
 
 func TestEnricher(t *testing.T) {

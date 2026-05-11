@@ -128,6 +128,7 @@ type MeteredUsage struct {
 	OutputCharacters   int     `json:"output_characters,omitempty"`
 	InputAudioSeconds  float64 `json:"input_audio_seconds,omitempty"`
 	OutputAudioSeconds float64 `json:"output_audio_seconds,omitempty"`
+	OutputVideoSeconds float64 `json:"output_video_seconds,omitempty"`
 	GeneratedImages    int     `json:"generated_images,omitempty"`
 }
 

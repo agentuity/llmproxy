@@ -148,6 +148,8 @@ func billingQuantitiesForUnit(unit string, usage MeteredUsage) (float64, float64
 		return float64(usage.InputCharacters), float64(usage.OutputCharacters)
 	case "per_minute_audio":
 		return usage.InputAudioSeconds / 60, usage.OutputAudioSeconds / 60
+	case "per_second_720p_video", "per_second_720p_1080p_video":
+		return 0, usage.OutputVideoSeconds
 	default:
 		return 0, 0
 	}
@@ -158,6 +160,8 @@ func meteredCostForUnit(costInfo CostInfo, unit string, inputQuantity float64, o
 	case "per_million_characters":
 		return costInfo.Input * inputQuantity / 1_000_000, costInfo.Output * outputQuantity / 1_000_000
 	case "per_minute_audio":
+		return costInfo.Input * inputQuantity, costInfo.Output * outputQuantity
+	case "per_second_720p_video", "per_second_720p_1080p_video":
 		return costInfo.Input * inputQuantity, costInfo.Output * outputQuantity
 	default:
 		return 0, 0

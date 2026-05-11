@@ -69,6 +69,7 @@ func mergeMeteredUsage(requestUsage llmproxy.MeteredUsage, responseUsage llmprox
 		OutputCharacters:   firstNonZeroInt(responseUsage.OutputCharacters, requestUsage.OutputCharacters),
 		InputAudioSeconds:  firstNonZeroFloat(responseUsage.InputAudioSeconds, requestUsage.InputAudioSeconds),
 		OutputAudioSeconds: firstNonZeroFloat(responseUsage.OutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		OutputVideoSeconds: firstNonZeroFloat(responseUsage.OutputVideoSeconds, requestUsage.OutputVideoSeconds),
 		GeneratedImages:    firstNonZeroInt(responseUsage.GeneratedImages, requestUsage.GeneratedImages),
 	}
 }

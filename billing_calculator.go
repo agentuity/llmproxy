@@ -63,6 +63,7 @@ func mergeMeteredUsage(requestUsage MeteredUsage, responseUsage MeteredUsage) Me
 		OutputCharacters:   firstNonZeroInt(responseUsage.OutputCharacters, requestUsage.OutputCharacters),
 		InputAudioSeconds:  firstNonZeroFloat(responseUsage.InputAudioSeconds, requestUsage.InputAudioSeconds),
 		OutputAudioSeconds: firstNonZeroFloat(responseUsage.OutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		OutputVideoSeconds: firstNonZeroFloat(responseUsage.OutputVideoSeconds, requestUsage.OutputVideoSeconds),
 		GeneratedImages:    firstNonZeroInt(responseUsage.GeneratedImages, requestUsage.GeneratedImages),
 	}
 }
