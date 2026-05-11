@@ -179,6 +179,46 @@ func TestResolver(t *testing.T) {
 			t.Errorf("expected %s, got %s", expected, u.String())
 		}
 	})
+
+	t.Run("resolves long-running endpoint from string api type", func(t *testing.T) {
+		resolver, err := NewResolver("https://generativelanguage.googleapis.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		meta := llmproxy.BodyMetadata{
+			Model:  "veo-3.1-generate-preview",
+			Custom: map[string]any{"api_type": string(llmproxy.APITypePredictLongRunning)},
+		}
+		u, err := resolver.Resolve(meta)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning"
+		if u.String() != expected {
+			t.Errorf("expected %s, got %s", expected, u.String())
+		}
+	})
+
+	t.Run("resolves streaming endpoint from string api type", func(t *testing.T) {
+		resolver, err := NewResolver("https://generativelanguage.googleapis.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		meta := llmproxy.BodyMetadata{
+			Model:  "gemini-pro",
+			Custom: map[string]any{"api_type": string(llmproxy.APITypeStreamGenerateContent)},
+		}
+		u, err := resolver.Resolve(meta)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:streamGenerateContent?alt=sse"
+		if u.String() != expected {
+			t.Errorf("expected %s, got %s", expected, u.String())
+		}
+	})
 }
 
 func TestExtractor(t *testing.T) {
