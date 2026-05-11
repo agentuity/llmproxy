@@ -10,6 +10,9 @@ type CostInfo struct {
 	CacheRead float64
 	// CacheWrite is the cost per 1M cache write tokens (optional, Anthropic).
 	CacheWrite float64
+	// Unit describes the billing unit for the cost values. Token-based models use
+	// "per_million_tokens"; non-token modalities may use provider-specific units.
+	Unit string
 }
 
 // CostLookup is a function that returns the cost for a given provider and model.
@@ -33,6 +36,12 @@ type BillingResult struct {
 	CachedTokens int
 	// TotalTokens is the sum of prompt and completion tokens.
 	TotalTokens int
+	// Unit is the billing unit used for this calculation.
+	Unit string
+	// InputQuantity is the input quantity for non-token units.
+	InputQuantity float64
+	// OutputQuantity is the output quantity for non-token units.
+	OutputQuantity float64
 	// InputCost is the calculated input cost in USD (non-cached prompt tokens).
 	InputCost float64
 	// CachedInputCost is the cost for cached prompt tokens in USD.
@@ -47,6 +56,32 @@ type BillingResult struct {
 // Cached tokens are billed at the CacheRead rate (if available), and non-cached prompt
 // tokens are billed at the full Input rate.
 func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, completionTokens int, cacheUsage *CacheUsage) BillingResult {
+	return CalculateCostWithMeteredUsage(provider, model, costInfo, promptTokens, completionTokens, cacheUsage, MeteredUsage{})
+}
+
+func CalculateCostWithMeteredUsage(provider, model string, costInfo CostInfo, promptTokens, completionTokens int, cacheUsage *CacheUsage, meteredUsage MeteredUsage) BillingResult {
+	unit := costInfo.Unit
+	if unit == "" {
+		unit = "per_million_tokens"
+	}
+	if costInfo.Unit != "" && costInfo.Unit != "per_million_tokens" {
+		inputQuantity, outputQuantity := billingQuantitiesForUnit(unit, meteredUsage)
+		inputCost, outputCost := meteredCostForUnit(costInfo, unit, inputQuantity, outputQuantity)
+		return BillingResult{
+			Provider:         provider,
+			Model:            model,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+			Unit:             unit,
+			InputQuantity:    inputQuantity,
+			OutputQuantity:   outputQuantity,
+			InputCost:        inputCost,
+			OutputCost:       outputCost,
+			TotalCost:        inputCost + outputCost,
+		}
+	}
+
 	cachedTokens := 0
 	if cacheUsage != nil {
 		// Providers populate only one of these fields — OpenAI/Fireworks/Bedrock
@@ -97,9 +132,34 @@ func CalculateCost(provider, model string, costInfo CostInfo, promptTokens, comp
 		CompletionTokens: completionTokens,
 		CachedTokens:     cachedTokens,
 		TotalTokens:      promptTokens + completionTokens,
+		Unit:             unit,
+		InputQuantity:    float64(promptTokens),
+		OutputQuantity:   float64(completionTokens),
 		InputCost:        inputCost,
 		CachedInputCost:  cachedInputCost,
 		OutputCost:       outputCost,
 		TotalCost:        inputCost + cachedInputCost + outputCost,
+	}
+}
+
+func billingQuantitiesForUnit(unit string, usage MeteredUsage) (float64, float64) {
+	switch unit {
+	case "per_million_characters":
+		return float64(usage.InputCharacters), float64(usage.OutputCharacters)
+	case "per_minute_audio":
+		return usage.InputAudioSeconds / 60, usage.OutputAudioSeconds / 60
+	default:
+		return 0, 0
+	}
+}
+
+func meteredCostForUnit(costInfo CostInfo, unit string, inputQuantity float64, outputQuantity float64) (float64, float64) {
+	switch unit {
+	case "per_million_characters":
+		return costInfo.Input * inputQuantity / 1_000_000, costInfo.Output * outputQuantity / 1_000_000
+	case "per_minute_audio":
+		return costInfo.Input * inputQuantity, costInfo.Output * outputQuantity
+	default:
+		return 0, 0
 	}
 }

@@ -13,12 +13,13 @@ type Enricher struct {
 	APIKey string
 }
 
-// Enrich adds the Authorization and Content-Type headers to the request.
-// It sets:
-//   - Authorization: Bearer <APIKey>
-//   - Content-Type: application/json
+// Enrich adds the Authorization header and defaults Content-Type to JSON.
+// Existing content types, such as multipart/form-data for audio uploads, are
+// preserved.
 func (e *Enricher) Enrich(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) error {
-	req.Header.Set("Content-Type", "application/json")
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if e.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.APIKey)
 	} else {

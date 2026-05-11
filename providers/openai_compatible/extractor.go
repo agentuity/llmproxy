@@ -31,6 +31,13 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "" && !strings.Contains(contentType, "json") {
+			return llmproxy.ResponseMetadata{
+				MeteredUsage: llmproxy.MeteredUsage{},
+				Custom:       make(map[string]any),
+			}, body, nil
+		}
 		return llmproxy.ResponseMetadata{}, nil, err
 	}
 
@@ -39,22 +46,34 @@ func (e *Extractor) Extract(resp *http.Response) (llmproxy.ResponseMetadata, []b
 		Object: openaiResp.Object,
 		Model:  openaiResp.Model,
 		Usage: llmproxy.Usage{
-			PromptTokens:     openaiResp.Usage.PromptTokens,
-			CompletionTokens: openaiResp.Usage.CompletionTokens,
-			TotalTokens:      openaiResp.Usage.TotalTokens,
+			PromptTokens:     openaiResp.Usage.PromptTokenCount(),
+			CompletionTokens: openaiResp.Usage.CompletionTokenCount(),
+			TotalTokens:      openaiResp.Usage.TotalTokenCount(),
 		},
 		Choices: make([]llmproxy.Choice, len(openaiResp.Choices)),
 		Custom:  make(map[string]any),
 	}
+	meta.MeteredUsage = llmproxy.MeteredUsage{
+		InputAudioSeconds: openaiResp.Usage.InputAudioSeconds(),
+		GeneratedImages:   len(openaiResp.Data),
+	}
 
-	if openaiResp.Usage.PromptTokensDetails != nil && openaiResp.Usage.PromptTokensDetails.CachedTokens > 0 {
+	promptDetails := openaiResp.Usage.PromptTokensDetails
+	if promptDetails == nil {
+		promptDetails = openaiResp.Usage.InputTokensDetails
+	}
+	if promptDetails != nil && promptDetails.CachedTokens > 0 {
 		meta.Custom["cache_usage"] = llmproxy.CacheUsage{
-			CachedTokens: openaiResp.Usage.PromptTokensDetails.CachedTokens,
+			CachedTokens: promptDetails.CachedTokens,
 		}
 	}
 
-	if openaiResp.Usage.CompletionTokensDetails != nil && openaiResp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-		meta.Custom["reasoning_tokens"] = openaiResp.Usage.CompletionTokensDetails.ReasoningTokens
+	completionDetails := openaiResp.Usage.CompletionTokensDetails
+	if completionDetails == nil {
+		completionDetails = openaiResp.Usage.OutputTokensDetails
+	}
+	if completionDetails != nil && completionDetails.ReasoningTokens > 0 {
+		meta.Custom["reasoning_tokens"] = completionDetails.ReasoningTokens
 	}
 
 	for i, c := range openaiResp.Choices {
@@ -93,15 +112,51 @@ type OpenAIResponse struct {
 	Usage UsageInfo `json:"usage"`
 	// Choices contains the completion choices.
 	Choices []ResponseChoice `json:"choices"`
+	// Data contains non-chat output records such as generated images.
+	Data []json.RawMessage `json:"data,omitempty"`
 }
 
 // UsageInfo tracks token usage in an OpenAI-compatible response.
 type UsageInfo struct {
 	PromptTokens            int                      `json:"prompt_tokens"`
+	InputTokens             int                      `json:"input_tokens"`
 	CompletionTokens        int                      `json:"completion_tokens"`
+	OutputTokens            int                      `json:"output_tokens"`
 	TotalTokens             int                      `json:"total_tokens"`
 	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	InputTokensDetails      *PromptTokensDetails     `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails     *CompletionTokensDetails `json:"output_tokens_details,omitempty"`
+	Type                    string                   `json:"type,omitempty"`
+	Seconds                 float64                  `json:"seconds,omitempty"`
+}
+
+func (u UsageInfo) PromptTokenCount() int {
+	if u.PromptTokens > 0 {
+		return u.PromptTokens
+	}
+	return u.InputTokens
+}
+
+func (u UsageInfo) CompletionTokenCount() int {
+	if u.CompletionTokens > 0 {
+		return u.CompletionTokens
+	}
+	return u.OutputTokens
+}
+
+func (u UsageInfo) TotalTokenCount() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokenCount() + u.CompletionTokenCount()
+}
+
+func (u UsageInfo) InputAudioSeconds() float64 {
+	if u.Type == "duration" {
+		return u.Seconds
+	}
+	return 0
 }
 
 // PromptTokensDetails contains detailed prompt token breakdown.

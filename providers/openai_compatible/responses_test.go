@@ -56,6 +56,10 @@ func TestResponsesParser(t *testing.T) {
 		t.Errorf("api_type = %v, want responses", meta.Custom["api_type"])
 	}
 
+	if meta.MeteredUsage.InputCharacters != 13 {
+		t.Errorf("InputCharacters = %d, want 13", meta.MeteredUsage.InputCharacters)
+	}
+
 	if len(data) == 0 {
 		t.Error("data is empty")
 	}

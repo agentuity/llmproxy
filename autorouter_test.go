@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1657,6 +1659,63 @@ func TestAutoRouter_ResponsesAPIStreamingNoStreamOptions(t *testing.T) {
 	})
 }
 
+func TestNormalizeProviderRequest_GoogleAI(t *testing.T) {
+	raw := map[string]any{
+		"model":              "googleai/gemini-2.5-flash",
+		"max_tokens":         float64(256),
+		"stream":             true,
+		"system_instruction": "You are concise.",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Say hello"},
+			map[string]any{"role": "assistant", "content": "Hello"},
+		},
+	}
+
+	normalizeProviderRequest(raw, "googleai")
+
+	if _, ok := raw["stream"]; ok {
+		t.Fatal("stream should be removed from Google AI upstream body")
+	}
+	if _, ok := raw["max_tokens"]; ok {
+		t.Fatal("max_tokens should be converted for Google AI")
+	}
+	if _, ok := raw["system_instruction"]; ok {
+		t.Fatal("system_instruction should be converted for Google AI")
+	}
+	if _, ok := raw["messages"]; ok {
+		t.Fatal("messages should be converted for Google AI")
+	}
+
+	generationConfig, ok := raw["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid: %#v", raw["generationConfig"])
+	}
+	if generationConfig["maxOutputTokens"] != float64(256) {
+		t.Fatalf("maxOutputTokens = %#v, want 256", generationConfig["maxOutputTokens"])
+	}
+
+	systemInstruction, ok := raw["systemInstruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("systemInstruction missing or invalid: %#v", raw["systemInstruction"])
+	}
+	systemParts, ok := systemInstruction["parts"].([]any)
+	if !ok || len(systemParts) != 1 {
+		t.Fatalf("systemInstruction parts invalid: %#v", systemInstruction["parts"])
+	}
+
+	contents, ok := raw["contents"].([]any)
+	if !ok || len(contents) != 2 {
+		t.Fatalf("contents missing or invalid: %#v", raw["contents"])
+	}
+	second, ok := contents[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second content invalid: %#v", contents[1])
+	}
+	if second["role"] != "model" {
+		t.Fatalf("assistant role should map to model, got %#v", second["role"])
+	}
+}
+
 func TestAutoRouter_copyResponseHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	copyResponseHeaders(w, http.Header{})
@@ -1728,4 +1787,308 @@ func TestAutoRouter_copyResponseHeaders(t *testing.T) {
 	sw.Reset()
 	w = httptest.NewRecorder()
 
+}
+
+func TestExtractModelFromPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/v1beta/models/gemini-3.1-flash-lite:generateContent", "gemini-3.1-flash-lite"},
+		{"/v1beta/models/veo-3.1-generate-preview:predictLongRunning", "veo-3.1-generate-preview"},
+		{"/v1/chat/completions", ""},
+	}
+	for _, tt := range tests {
+		if got := extractModelFromPath(tt.path); got != tt.want {
+			t.Fatalf("extractModelFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestAutoRouter_ModelMetadataValidationRejectsUnsupportedSurface(t *testing.T) {
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(h ProviderHint) string {
+			return "googleai"
+		})),
+		WithAutoRouterFallbackProvider(&mockProvider{name: "googleai"}),
+		WithAutoRouterModelMetadataLookup(func(provider, model string) (ModelMetadata, bool) {
+			return ModelMetadata{
+				APICompatibility: "google-generative-ai-long-running",
+				InputModalities:  []string{"text", "image"},
+				OutputModalities: []string{"video"},
+			}, true
+		}),
+	)
+	router.RegisterProvider(&mockProvider{name: "googleai"})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"googleai/veo-3.1-generate-preview","messages":[{"role":"user","content":"hello"}]}`))
+	_, _, err := router.Forward(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected unsupported surface error")
+	}
+	if !strings.Contains(err.Error(), "does not support chat_completions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAutoRouter_ModelMetadataValidationAllowsGoogleLongRunningPathModel(t *testing.T) {
+	var parsedModel string
+	provider := &mockProvider{
+		name: "googleai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, err := io.ReadAll(body)
+			return BodyMetadata{Custom: map[string]any{}}, data, err
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+			return nil
+		},
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			parsedModel = meta.Model
+			return url.Parse("https://example.com/v1beta/models/" + meta.Model + ":predictLongRunning")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, err := io.ReadAll(resp.Body)
+			return ResponseMetadata{Custom: map[string]any{}}, body, err
+		},
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"operations/test"}`))
+	}))
+	defer upstream.Close()
+	provider.resolveFn = func(meta BodyMetadata) (*url.URL, error) {
+		parsedModel = meta.Model
+		return url.Parse(upstream.URL + "/v1beta/models/" + meta.Model + ":predictLongRunning")
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(h ProviderHint) string {
+			return "googleai"
+		})),
+		WithAutoRouterHTTPClient(upstream.Client()),
+		WithAutoRouterFallbackProvider(provider),
+		WithAutoRouterModelMetadataLookup(func(provider, model string) (ModelMetadata, bool) {
+			return ModelMetadata{
+				APICompatibility: "google-generative-ai-long-running",
+				InputModalities:  []string{"text", "image"},
+				OutputModalities: []string{"video"},
+			}, true
+		}),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/veo-3.1-generate-preview:predictLongRunning", strings.NewReader(`{"instances":[{"prompt":"hello"}]}`))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if parsedModel != "veo-3.1-generate-preview" {
+		t.Fatalf("parsed model = %q, want veo-3.1-generate-preview", parsedModel)
+	}
+}
+
+func TestAutoRouter_GoogleNativePathSelectsGoogleProviderWithoutModelPrefix(t *testing.T) {
+	var parsedModel string
+	provider := &mockProvider{
+		name: "googleai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, err := io.ReadAll(body)
+			return BodyMetadata{Custom: map[string]any{}}, data, err
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+			return nil
+		},
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			parsedModel = meta.Model
+			return url.Parse("https://example.com/v1beta/models/" + meta.Model + ":generateContent")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, err := io.ReadAll(resp.Body)
+			return ResponseMetadata{Custom: map[string]any{}}, body, err
+		},
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"pong"}]}}]}`))
+	}))
+	defer upstream.Close()
+	provider.resolveFn = func(meta BodyMetadata) (*url.URL, error) {
+		parsedModel = meta.Model
+		return url.Parse(upstream.URL + "/v1beta/models/" + meta.Model + ":generateContent")
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(h ProviderHint) string {
+			return ""
+		})),
+		WithAutoRouterHTTPClient(upstream.Client()),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-3.1-flash-lite:generateContent", strings.NewReader(`{
+		"contents": [
+			{"role": "user", "parts": [{"text": "Say pong in one word."}]}
+		]
+	}`))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if parsedModel != "gemini-3.1-flash-lite" {
+		t.Fatalf("parsed model = %q, want gemini-3.1-flash-lite", parsedModel)
+	}
+}
+
+func TestAutoRouter_GoogleNativeStreamPathUsesStreamingForwarder(t *testing.T) {
+	var parsedModel string
+	provider := &mockStreamingProvider{
+		mockProvider: &mockProvider{
+			name: "googleai",
+			parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+				data, err := io.ReadAll(body)
+				return BodyMetadata{Custom: map[string]any{}}, data, err
+			},
+			enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+				return nil
+			},
+			resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+				parsedModel = meta.Model
+				return url.Parse("https://example.com/v1beta/models/" + meta.Model + ":streamGenerateContent?alt=sse")
+			},
+		},
+		streamingExtractor: &mockStreamingExtractor{
+			isStreaming: true,
+			extractStreamingFn: func(resp *http.Response, w http.ResponseWriter, rc *http.ResponseController) (ResponseMetadata, error) {
+				_, _ = io.Copy(w, resp.Body)
+				_ = rc.Flush()
+				return ResponseMetadata{Custom: map[string]any{}}, nil
+			},
+		},
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Pong\"}]}}]}\n\n"))
+	}))
+	defer upstream.Close()
+	provider.resolveFn = func(meta BodyMetadata) (*url.URL, error) {
+		parsedModel = meta.Model
+		return url.Parse(upstream.URL + "/v1beta/models/" + meta.Model + ":streamGenerateContent?alt=sse")
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(h ProviderHint) string {
+			return ""
+		})),
+		WithAutoRouterHTTPClient(upstream.Client()),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent", strings.NewReader(`{
+		"contents": [
+			{"role": "user", "parts": [{"text": "Say pong in one word."}]}
+		]
+	}`))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	if parsedModel != "gemini-3.1-flash-lite" {
+		t.Fatalf("parsed model = %q, want gemini-3.1-flash-lite", parsedModel)
+	}
+	if !strings.Contains(recorder.Body.String(), `"Pong"`) {
+		t.Fatalf("stream body = %q, want Pong token", recorder.Body.String())
+	}
+}
+
+func TestAutoRouter_OpenAIAudioTranscriptionMultipartPassesThrough(t *testing.T) {
+	var upstreamBody []byte
+	var upstreamContentType string
+	var resolvedModel string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamContentType = r.Header.Get("Content-Type")
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hello"}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{}, data, errors.New("json parser should not block multipart pass-through")
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error {
+			return nil
+		},
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			resolvedModel = meta.Model
+			return url.Parse(upstream.URL + "/v1/audio/transcriptions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, err := io.ReadAll(resp.Body)
+			return ResponseMetadata{Custom: map[string]any{}}, body, err
+		},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "openai/whisper-1"); err != nil {
+		t.Fatal(err)
+	}
+	file, err := writer.CreateFormFile("file", "hello.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("fake wav data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(h ProviderHint) string {
+			return "openai"
+		})),
+		WithAutoRouterHTTPClient(upstream.Client()),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resolvedModel != "whisper-1" {
+		t.Fatalf("resolved model = %q, want whisper-1", resolvedModel)
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(upstreamBody), boundaryFromContentType(t, upstreamContentType))
+	form, err := reader.ReadForm(1024 * 1024)
+	if err != nil {
+		t.Fatalf("ReadForm() error = %v", err)
+	}
+	if got := form.Value["model"][0]; got != "whisper-1" {
+		t.Fatalf("upstream model = %q, want whisper-1", got)
+	}
+	if len(form.File["file"]) != 1 {
+		t.Fatalf("upstream file parts = %d, want 1", len(form.File["file"]))
+	}
+}
+
+func boundaryFromContentType(t *testing.T, contentType string) string {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("ParseMediaType() error = %v", err)
+	}
+	return params["boundary"]
 }

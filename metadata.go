@@ -106,6 +106,8 @@ type BodyMetadata struct {
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Stream indicates whether streaming is requested.
 	Stream bool `json:"stream"`
+	// MeteredUsage contains non-token metered request consumption.
+	MeteredUsage MeteredUsage `json:"metered_usage,omitempty"`
 	// Custom holds provider-specific fields that don't map to standard fields.
 	Custom map[string]any `json:"-"`
 }
@@ -118,6 +120,15 @@ type Usage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	// TotalTokens is the sum of prompt and completion tokens.
 	TotalTokens int `json:"total_tokens"`
+}
+
+// MeteredUsage tracks non-token consumption for modality-specific APIs.
+type MeteredUsage struct {
+	InputCharacters    int     `json:"input_characters,omitempty"`
+	OutputCharacters   int     `json:"output_characters,omitempty"`
+	InputAudioSeconds  float64 `json:"input_audio_seconds,omitempty"`
+	OutputAudioSeconds float64 `json:"output_audio_seconds,omitempty"`
+	GeneratedImages    int     `json:"generated_images,omitempty"`
 }
 
 // CacheUsage tracks prompt caching token consumption.
@@ -169,6 +180,8 @@ type ResponseMetadata struct {
 	Model string `json:"model,omitempty"`
 	// Usage contains token consumption statistics.
 	Usage Usage `json:"usage"`
+	// MeteredUsage contains non-token metered response consumption.
+	MeteredUsage MeteredUsage `json:"metered_usage,omitempty"`
 	// Choices contains the completion choices.
 	Choices []Choice `json:"choices,omitempty"`
 	// Custom holds provider-specific response fields.

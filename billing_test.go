@@ -183,6 +183,42 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 	assertFloat(t, "TotalCost", result.TotalCost, 0)
 }
 
+func TestCalculateCost_PerMillionCharacters(t *testing.T) {
+	result := CalculateCostWithMeteredUsage(
+		"openai",
+		"tts-1",
+		CostInfo{Input: 15, Unit: "per_million_characters"},
+		0,
+		0,
+		nil,
+		MeteredUsage{InputCharacters: 10},
+	)
+
+	assertFloat(t, "InputCost", result.InputCost, 0.00015)
+	assertFloat(t, "TotalCost", result.TotalCost, 0.00015)
+	if result.InputQuantity != 10 {
+		t.Fatalf("InputQuantity = %f, want 10", result.InputQuantity)
+	}
+}
+
+func TestCalculateCost_PerMinuteAudio(t *testing.T) {
+	result := CalculateCostWithMeteredUsage(
+		"openai",
+		"whisper-1",
+		CostInfo{Input: 0.006, Unit: "per_minute_audio"},
+		0,
+		0,
+		nil,
+		MeteredUsage{InputAudioSeconds: 30},
+	)
+
+	assertFloat(t, "InputCost", result.InputCost, 0.003)
+	assertFloat(t, "TotalCost", result.TotalCost, 0.003)
+	if result.InputQuantity != 0.5 {
+		t.Fatalf("InputQuantity = %f, want 0.5", result.InputQuantity)
+	}
+}
+
 func TestCalculateCost_MixedProviderCacheFields(t *testing.T) {
 	// Both CachedTokens and CacheReadInputTokens set (shouldn't happen, but test summing)
 	costInfo := CostInfo{Input: 3.0, Output: 15.0, CacheRead: 1.5}

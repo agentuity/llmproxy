@@ -27,6 +27,14 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 		return r.BaseURL.JoinPath("v1", "responses"), nil
 	case llmproxy.APITypeCompletions:
 		return r.BaseURL.JoinPath("v1", "completions"), nil
+	case llmproxy.APITypeEmbeddings:
+		return r.BaseURL.JoinPath("v1", "embeddings"), nil
+	case llmproxy.APITypeImagesGenerations:
+		return r.BaseURL.JoinPath("v1", "images", "generations"), nil
+	case llmproxy.APITypeAudioSpeech:
+		return r.BaseURL.JoinPath("v1", "audio", "speech"), nil
+	case llmproxy.APITypeAudioTranscriptions:
+		return r.BaseURL.JoinPath("v1", "audio", "transcriptions"), nil
 	default:
 		return r.BaseURL.JoinPath("v1", "chat", "completions"), nil
 	}

@@ -30,12 +30,16 @@ func (r *Resolver) Resolve(meta llmproxy.BodyMetadata) (*url.URL, error) {
 	}
 
 	var endpoint *url.URL
-	if meta.Stream {
+	apiType, _ := meta.Custom["api_type"].(llmproxy.APIType)
+	switch {
+	case apiType == llmproxy.APITypePredictLongRunning:
+		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:predictLongRunning", model))
+	case meta.Stream || apiType == llmproxy.APITypeStreamGenerateContent:
 		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:streamGenerateContent", model))
 		q := endpoint.Query()
 		q.Set("alt", "sse")
 		endpoint.RawQuery = q.Encode()
-	} else {
+	default:
 		endpoint = r.BaseURL.JoinPath("v1beta", "models", fmt.Sprintf("%s:generateContent", model))
 	}
 	return endpoint, nil

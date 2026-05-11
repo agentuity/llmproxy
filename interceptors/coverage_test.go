@@ -1,6 +1,7 @@
 package interceptors
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -239,6 +240,44 @@ func TestRetryInterceptor_ExhaustedAttempts(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("StatusCode = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestRetryInterceptor_ExhaustedAttemptsKeepsFinalBodyOpen(t *testing.T) {
+	callCount := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+	}))
+	defer upstream.Close()
+
+	retry := NewRetry(3, time.Millisecond)
+
+	req, _ := http.NewRequest("POST", upstream.URL, http.NoBody)
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		return resp, llmproxy.ResponseMetadata{}, nil, nil
+	}
+
+	resp, _, _, err := retry.Intercept(req, llmproxy.BodyMetadata{}, nil, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if callCount != 3 {
+		t.Errorf("callCount = %d, want 3", callCount)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("final response body should remain readable: %v", err)
+	}
+	if string(body) != "rate limited" {
+		t.Fatalf("final response body = %q, want %q", string(body), "rate limited")
 	}
 }
 

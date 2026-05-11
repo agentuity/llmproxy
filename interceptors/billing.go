@@ -50,7 +50,7 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 				cacheUsage = &usage
 			}
 		}
-		result := llmproxy.CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
+		result := llmproxy.CalculateCostWithMeteredUsage(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage, mergeMeteredUsage(meta.MeteredUsage, respMeta.MeteredUsage))
 		if respMeta.Custom == nil {
 			respMeta.Custom = make(map[string]any)
 		}
@@ -61,6 +61,34 @@ func (i *BillingInterceptor) Intercept(req *http.Request, meta llmproxy.BodyMeta
 	}
 
 	return resp, respMeta, rawRespBody, nil
+}
+
+func mergeMeteredUsage(requestUsage llmproxy.MeteredUsage, responseUsage llmproxy.MeteredUsage) llmproxy.MeteredUsage {
+	return llmproxy.MeteredUsage{
+		InputCharacters:    firstNonZeroInt(responseUsage.InputCharacters, requestUsage.InputCharacters),
+		OutputCharacters:   firstNonZeroInt(responseUsage.OutputCharacters, requestUsage.OutputCharacters),
+		InputAudioSeconds:  firstNonZeroFloat(responseUsage.InputAudioSeconds, requestUsage.InputAudioSeconds),
+		OutputAudioSeconds: firstNonZeroFloat(responseUsage.OutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		GeneratedImages:    firstNonZeroInt(responseUsage.GeneratedImages, requestUsage.GeneratedImages),
+	}
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonZeroFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // NewBilling creates a new billing interceptor with the given lookup function.

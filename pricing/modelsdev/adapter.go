@@ -327,6 +327,7 @@ type Cost struct {
 	CacheWrite  float64 `json:"cache_write,omitempty"`
 	InputAudio  float64 `json:"input_audio,omitempty"`
 	OutputAudio float64 `json:"output_audio,omitempty"`
+	Unit        string  `json:"unit,omitempty"`
 }
 
 // Limit represents token limits.
@@ -348,6 +349,7 @@ func costToInfo(c Cost, markup float64) llmproxy.CostInfo {
 		Output:     c.Output,
 		CacheRead:  c.CacheRead,
 		CacheWrite: c.CacheWrite,
+		Unit:       c.Unit,
 	}
 	if markup > 0 && markup != 1.0 {
 		info.Input *= markup

@@ -7,12 +7,18 @@ import (
 type APIType string
 
 const (
-	APITypeChatCompletions APIType = "chat_completions"
-	APITypeResponses       APIType = "responses"
-	APITypeCompletions     APIType = "completions"
-	APITypeMessages        APIType = "messages"
-	APITypeGenerateContent APIType = "generate_content"
-	APITypeConverse        APIType = "converse"
+	APITypeChatCompletions       APIType = "chat_completions"
+	APITypeResponses             APIType = "responses"
+	APITypeCompletions           APIType = "completions"
+	APITypeMessages              APIType = "messages"
+	APITypeGenerateContent       APIType = "generate_content"
+	APITypeStreamGenerateContent APIType = "stream_generate_content"
+	APITypePredictLongRunning    APIType = "predict_long_running"
+	APITypeEmbeddings            APIType = "embeddings"
+	APITypeImagesGenerations     APIType = "images_generations"
+	APITypeAudioSpeech           APIType = "audio_speech"
+	APITypeAudioTranscriptions   APIType = "audio_transcriptions"
+	APITypeConverse              APIType = "converse"
 )
 
 func DetectAPIType(body []byte) APIType {
@@ -44,8 +50,20 @@ func DetectAPITypeFromPath(path string) APIType {
 		return APITypeResponses
 	case containsPath(path, "/v1/completions"):
 		return APITypeCompletions
+	case containsPath(path, "/v1/embeddings"):
+		return APITypeEmbeddings
+	case containsPath(path, "/v1/images/generations"):
+		return APITypeImagesGenerations
+	case containsPath(path, "/v1/audio/speech"):
+		return APITypeAudioSpeech
+	case containsPath(path, "/v1/audio/transcriptions"):
+		return APITypeAudioTranscriptions
 	case containsPath(path, "/v1/messages"):
 		return APITypeMessages
+	case containsPath(path, ":streamGenerateContent"):
+		return APITypeStreamGenerateContent
+	case containsPath(path, ":predictLongRunning"):
+		return APITypePredictLongRunning
 	case containsPath(path, ":generateContent"):
 		return APITypeGenerateContent
 	case containsPath(path, "/converse"):

@@ -42,7 +42,8 @@ func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetad
 		}
 	}
 
-	result := CalculateCost(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage)
+	meteredUsage := mergeMeteredUsage(meta.MeteredUsage, respMeta.MeteredUsage)
+	result := CalculateCostWithMeteredUsage(provider, meta.Model, costInfo, respMeta.Usage.PromptTokens, respMeta.Usage.CompletionTokens, cacheUsage, meteredUsage)
 
 	if respMeta.Custom == nil {
 		respMeta.Custom = make(map[string]any)
@@ -54,6 +55,34 @@ func (c *BillingCalculator) Calculate(meta BodyMetadata, respMeta *ResponseMetad
 	}
 
 	return &result
+}
+
+func mergeMeteredUsage(requestUsage MeteredUsage, responseUsage MeteredUsage) MeteredUsage {
+	return MeteredUsage{
+		InputCharacters:    firstNonZeroInt(responseUsage.InputCharacters, requestUsage.InputCharacters),
+		OutputCharacters:   firstNonZeroInt(responseUsage.OutputCharacters, requestUsage.OutputCharacters),
+		InputAudioSeconds:  firstNonZeroFloat(responseUsage.InputAudioSeconds, requestUsage.InputAudioSeconds),
+		OutputAudioSeconds: firstNonZeroFloat(responseUsage.OutputAudioSeconds, requestUsage.OutputAudioSeconds),
+		GeneratedImages:    firstNonZeroInt(responseUsage.GeneratedImages, requestUsage.GeneratedImages),
+	}
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonZeroFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (c *BillingCalculator) Lookup() CostLookup {
