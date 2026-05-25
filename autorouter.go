@@ -1001,10 +1001,85 @@ func normalizeProviderRequest(raw map[string]any, providerName string) {
 const defaultAnthropicMaxTokens = 1024
 
 func normalizeAnthropicRequest(raw map[string]any) {
+	normalizeAnthropicSystemMessages(raw)
+
 	if hasPositiveNumber(raw["max_tokens"]) {
 		return
 	}
 	raw["max_tokens"] = defaultAnthropicMaxTokens
+}
+
+func normalizeAnthropicSystemMessages(raw map[string]any) {
+	messages, ok := raw["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return
+	}
+
+	filtered := make([]any, 0, len(messages))
+	systemParts := make([]any, 0, 1)
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		role, _ := message["role"].(string)
+		if role != "system" {
+			filtered = append(filtered, item)
+			continue
+		}
+		if content, exists := message["content"]; exists {
+			systemParts = append(systemParts, content)
+		}
+	}
+
+	if len(systemParts) == 0 {
+		return
+	}
+
+	raw["messages"] = filtered
+	raw["system"] = mergeAnthropicSystem(raw["system"], systemParts)
+}
+
+func mergeAnthropicSystem(existing any, systemParts []any) any {
+	systemText := joinTextParts(systemParts)
+	if existing == nil {
+		if systemText != "" {
+			return systemText
+		}
+		return systemParts[0]
+	}
+
+	existingText := joinTextParts([]any{existing})
+	if existingText != "" && systemText != "" {
+		return existingText + "\n\n" + systemText
+	}
+	return existing
+}
+
+func joinTextParts(parts []any) string {
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch v := part.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				values = append(values, v)
+			}
+		case []any:
+			for _, item := range v {
+				block, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				blockType, _ := block["type"].(string)
+				text, _ := block["text"].(string)
+				if blockType == "text" && strings.TrimSpace(text) != "" {
+					values = append(values, text)
+				}
+			}
+		}
+	}
+	return strings.Join(values, "\n\n")
 }
 
 func hasPositiveNumber(value any) bool {
