@@ -961,6 +961,11 @@ func normalizeProviderRequest(raw map[string]any, providerName string) {
 		return
 	}
 
+	if providerName == "anthropic" {
+		normalizeAnthropicRequest(raw)
+		return
+	}
+
 	if providerName != "deepseek" {
 		return
 	}
@@ -990,6 +995,49 @@ func normalizeProviderRequest(raw map[string]any, providerName string) {
 			delete(raw, "reasoning_effort")
 			raw["thinking"] = map[string]any{"type": "disabled"}
 		}
+	}
+}
+
+const defaultAnthropicMaxTokens = 1024
+
+func normalizeAnthropicRequest(raw map[string]any) {
+	if hasPositiveNumber(raw["max_tokens"]) {
+		return
+	}
+	raw["max_tokens"] = defaultAnthropicMaxTokens
+}
+
+func hasPositiveNumber(value any) bool {
+	switch v := value.(type) {
+	case int:
+		return v > 0
+	case int8:
+		return v > 0
+	case int16:
+		return v > 0
+	case int32:
+		return v > 0
+	case int64:
+		return v > 0
+	case uint:
+		return v > 0
+	case uint8:
+		return v > 0
+	case uint16:
+		return v > 0
+	case uint32:
+		return v > 0
+	case uint64:
+		return v > 0
+	case float32:
+		return v > 0
+	case float64:
+		return v > 0
+	case json.Number:
+		f, err := v.Float64()
+		return err == nil && f > 0
+	default:
+		return false
 	}
 }
 
