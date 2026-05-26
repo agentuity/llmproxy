@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -624,7 +625,7 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isWebSocketUpgrade(r) && a.wsUpgrader != nil && a.wsDialer != nil {
 		if err := a.ForwardWebSocket(r.Context(), w, r); err != nil {
 			if !headerSent(w) {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				http.Error(w, err.Error(), statusCodeForForwardError(err))
 			}
 		}
 		return
@@ -655,7 +656,7 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, err := a.ForwardStreaming(r.Context(), r, w)
 		if err != nil {
 			if !headerSent(w) {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				http.Error(w, err.Error(), statusCodeForForwardError(err))
 			}
 			return
 		}
@@ -665,7 +666,7 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, meta, err := a.Forward(r.Context(), r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), statusCodeForForwardError(err))
 		return
 	}
 	defer resp.Body.Close()
@@ -707,6 +708,27 @@ func (a *AutoRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = rc.Flush()
 	}
+}
+
+func statusCodeForForwardError(err error) int {
+	if isForwardTimeoutError(err) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusInternalServerError
+}
+
+func isForwardTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "timeout awaiting response headers")
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {

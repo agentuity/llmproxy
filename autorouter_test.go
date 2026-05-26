@@ -878,6 +878,80 @@ func TestAutoRouter_ServeHTTP(t *testing.T) {
 	}
 }
 
+func TestAutoRouter_ServeHTTPMapsUpstreamTimeoutToGatewayTimeout(t *testing.T) {
+	provider := &mockProvider{
+		name: "test",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse("https://api.openai.com")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(ProviderHint) string { return "test" })),
+		WithAutoRouterHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("Post https://api.openai.com/v1/chat/completions: net/http: timeout awaiting response headers")
+		})}),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`)))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("StatusCode = %d, want 504", w.Code)
+	}
+}
+
+func TestAutoRouter_ServeHTTPMapsStreamingUpstreamTimeoutToGatewayTimeout(t *testing.T) {
+	provider := &mockProvider{
+		name: "test",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5", Stream: true}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse("https://api.openai.com")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(ProviderHint) string { return "test" })),
+		WithAutoRouterHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		})}),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("StatusCode = %d, want 504", w.Code)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func ParseURL(s string) (*url.URL, error) {
 	return url.Parse(s)
 }
