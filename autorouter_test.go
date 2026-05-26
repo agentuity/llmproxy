@@ -1810,6 +1810,153 @@ func TestAutoRouter_AnthropicRemovesSystemMessageWithMissingContent(t *testing.T
 	}
 }
 
+func TestAutoRouter_OpenAIGPT5UsesMaxCompletionTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"gpt-5","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-5","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if _, exists := receivedBody["max_tokens"]; exists {
+		t.Fatalf("max_tokens should be removed for gpt-5: %#v", receivedBody)
+	}
+	if got := receivedBody["max_completion_tokens"]; got != float64(64) {
+		t.Fatalf("max_completion_tokens = %v, want 64", got)
+	}
+}
+
+func TestAutoRouter_OpenAILegacyModelPreservesMaxTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-4o", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4o","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if got := receivedBody["max_tokens"]; got != float64(64) {
+		t.Fatalf("max_tokens = %v, want 64", got)
+	}
+	if _, exists := receivedBody["max_completion_tokens"]; exists {
+		t.Fatalf("max_completion_tokens should not be injected for gpt-4o: %#v", receivedBody)
+	}
+}
+
+func TestAutoRouter_OpenAIPreservesExplicitMaxCompletionTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"o4-mini","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "o4-mini", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"o4-mini","max_tokens":64,"max_completion_tokens":32,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if _, exists := receivedBody["max_tokens"]; exists {
+		t.Fatalf("max_tokens should be removed for o4-mini: %#v", receivedBody)
+	}
+	if got := receivedBody["max_completion_tokens"]; got != float64(32) {
+		t.Fatalf("max_completion_tokens = %v, want 32", got)
+	}
+}
+
 func TestAutoRouter_StreamingWritesGatewayMetadataEvent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

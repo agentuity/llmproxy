@@ -988,6 +988,11 @@ func normalizeProviderRequest(raw map[string]any, providerName string) {
 		return
 	}
 
+	if providerName == "openai" {
+		normalizeOpenAIRequest(raw)
+		return
+	}
+
 	if providerName != "deepseek" {
 		return
 	}
@@ -1137,6 +1142,36 @@ func hasPositiveNumber(value any) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeOpenAIRequest(raw map[string]any) {
+	if !openAIModelUsesMaxCompletionTokens(raw["model"]) {
+		return
+	}
+
+	maxTokens, ok := raw["max_tokens"]
+	if !ok {
+		return
+	}
+	if _, exists := raw["max_completion_tokens"]; !exists {
+		raw["max_completion_tokens"] = maxTokens
+	}
+	delete(raw, "max_tokens")
+}
+
+func openAIModelUsesMaxCompletionTokens(model any) bool {
+	modelName, ok := model.(string)
+	if !ok {
+		return false
+	}
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if stripped, hasPrefix := stripProviderPrefix(modelName); hasPrefix {
+		modelName = stripped
+	}
+	return strings.HasPrefix(modelName, "gpt-5") ||
+		strings.HasPrefix(modelName, "o1") ||
+		strings.HasPrefix(modelName, "o3") ||
+		strings.HasPrefix(modelName, "o4")
 }
 
 func normalizeGoogleAIRequest(raw map[string]any) {
