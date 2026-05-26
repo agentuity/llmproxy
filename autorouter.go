@@ -1033,12 +1033,10 @@ func normalizeAnthropicSystemMessages(raw map[string]any) {
 		}
 	}
 
-	if len(systemParts) == 0 {
-		return
-	}
-
 	raw["messages"] = filtered
-	raw["system"] = mergeAnthropicSystem(raw["system"], systemParts)
+	if len(systemParts) > 0 {
+		raw["system"] = mergeAnthropicSystem(raw["system"], systemParts)
+	}
 }
 
 func mergeAnthropicSystem(existing any, systemParts []any) any {
@@ -1053,6 +1051,9 @@ func mergeAnthropicSystem(existing any, systemParts []any) any {
 	existingText := joinTextParts([]any{existing})
 	if existingText != "" && systemText != "" {
 		return existingText + "\n\n" + systemText
+	}
+	if systemText != "" {
+		return systemText
 	}
 	return existing
 }

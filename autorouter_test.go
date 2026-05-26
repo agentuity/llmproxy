@@ -1619,6 +1619,123 @@ func TestAutoRouter_AnthropicMergesSystemMessageWithExistingSystem(t *testing.T)
 	}
 }
 
+func TestAutoRouter_AnthropicUsesSystemMessageWhenExistingSystemEmpty(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_test","type":"message","model":"claude-3-opus","content":[{"type":"text","text":"Hello"}],"usage":{"input_tokens":8,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "anthropic",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "claude-3-opus"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "msg_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "anthropic" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"claude-3-opus","system":"","messages":[{"role":"system","content":"Use terse answers."},{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if got := receivedBody["system"]; got != "Use terse answers." {
+		t.Fatalf("system = %v, want %q", got, "Use terse answers.")
+	}
+	messages, ok := receivedBody["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one non-system message", receivedBody["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("messages[0] = %T, want map[string]any", messages[0])
+	}
+	if got := message["role"]; got != "user" {
+		t.Fatalf("messages[0].role = %v, want user", got)
+	}
+	if got := receivedBody["max_tokens"]; got != float64(defaultAnthropicMaxTokens) {
+		t.Fatalf("max_tokens = %v, want %d", got, defaultAnthropicMaxTokens)
+	}
+}
+
+func TestAutoRouter_AnthropicRemovesSystemMessageWithMissingContent(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_test","type":"message","model":"claude-3-opus","content":[{"type":"text","text":"Hello"}],"usage":{"input_tokens":8,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "anthropic",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "claude-3-opus"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "msg_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "anthropic" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"claude-3-opus","system":"Existing system.","messages":[{"role":"system"},{"role":"system","content":null},{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if got := receivedBody["system"]; got != "Existing system." {
+		t.Fatalf("system = %v, want existing system unchanged", got)
+	}
+	messages, ok := receivedBody["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one non-system message", receivedBody["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("messages[0] = %T, want map[string]any", messages[0])
+	}
+	if got := message["role"]; got != "user" {
+		t.Fatalf("messages[0].role = %v, want user", got)
+	}
+}
+
 func TestAutoRouter_StreamingWritesGatewayMetadataEvent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
