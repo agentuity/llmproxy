@@ -66,7 +66,7 @@ func (i *PromptCachingInterceptor) Intercept(req *http.Request, meta llmproxy.Bo
 		case "anthropic":
 			shouldApply = strings.Contains(modelLower, "claude")
 		case "openai":
-			shouldApply = isOpenAIModel(modelLower)
+			shouldApply = isOpenAICacheProvider(meta) && isOpenAIModel(modelLower)
 		case "xai":
 			shouldApply = isXAIModel(modelLower)
 		case "fireworks":
@@ -646,6 +646,19 @@ func isOpenAIModel(modelLower string) bool {
 		strings.Contains(modelLower, "o3-") ||
 		strings.Contains(modelLower, "o4-") ||
 		strings.Contains(modelLower, "chatgpt")
+}
+
+func isOpenAICacheProvider(meta llmproxy.BodyMetadata) bool {
+	if meta.Custom == nil {
+		return true
+	}
+	provider, _ := meta.Custom["provider"].(string)
+	switch provider {
+	case "", "openai", "azure":
+		return true
+	default:
+		return false
+	}
 }
 
 func isXAIModel(modelLower string) bool {

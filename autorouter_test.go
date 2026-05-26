@@ -878,6 +878,80 @@ func TestAutoRouter_ServeHTTP(t *testing.T) {
 	}
 }
 
+func TestAutoRouter_ServeHTTPMapsUpstreamTimeoutToGatewayTimeout(t *testing.T) {
+	provider := &mockProvider{
+		name: "test",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5"}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse("https://api.openai.com")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(ProviderHint) string { return "test" })),
+		WithAutoRouterHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("Post https://api.openai.com/v1/chat/completions: net/http: timeout awaiting response headers")
+		})}),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`)))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("StatusCode = %d, want 504", w.Code)
+	}
+}
+
+func TestAutoRouter_ServeHTTPMapsStreamingUpstreamTimeoutToGatewayTimeout(t *testing.T) {
+	provider := &mockProvider{
+		name: "test",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5", Stream: true}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse("https://api.openai.com")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			return ResponseMetadata{}, nil, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(ProviderHint) string { return "test" })),
+		WithAutoRouterHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		})}),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("StatusCode = %d, want 504", w.Code)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func ParseURL(s string) (*url.URL, error) {
 	return url.Parse(s)
 }
@@ -1733,6 +1807,153 @@ func TestAutoRouter_AnthropicRemovesSystemMessageWithMissingContent(t *testing.T
 	}
 	if got := message["role"]; got != "user" {
 		t.Fatalf("messages[0].role = %v, want user", got)
+	}
+}
+
+func TestAutoRouter_OpenAIGPT5UsesMaxCompletionTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"gpt-5","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-5", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-5","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if _, exists := receivedBody["max_tokens"]; exists {
+		t.Fatalf("max_tokens should be removed for gpt-5: %#v", receivedBody)
+	}
+	if got := receivedBody["max_completion_tokens"]; got != float64(64) {
+		t.Fatalf("max_completion_tokens = %v, want 64", got)
+	}
+}
+
+func TestAutoRouter_OpenAILegacyModelPreservesMaxTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "gpt-4o", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"gpt-4o","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if got := receivedBody["max_tokens"]; got != float64(64) {
+		t.Fatalf("max_tokens = %v, want 64", got)
+	}
+	if _, exists := receivedBody["max_completion_tokens"]; exists {
+		t.Fatalf("max_completion_tokens should not be injected for gpt-4o: %#v", receivedBody)
+	}
+}
+
+func TestAutoRouter_OpenAIPreservesExplicitMaxCompletionTokens(t *testing.T) {
+	var receivedBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion","model":"o4-mini","choices":[{"message":{"role":"assistant","content":"Hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "openai",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			return BodyMetadata{Model: "o4-mini", MaxTokens: 64}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return url.Parse(upstream.URL)
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl_test"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string { return "openai" })),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/", bytes.NewReader([]byte(`{"model":"o4-mini","max_tokens":64,"max_completion_tokens":32,"messages":[{"role":"user","content":"Hello"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", w.Code)
+	}
+	if _, exists := receivedBody["max_tokens"]; exists {
+		t.Fatalf("max_tokens should be removed for o4-mini: %#v", receivedBody)
+	}
+	if got := receivedBody["max_completion_tokens"]; got != float64(32) {
+		t.Fatalf("max_completion_tokens = %v, want 32", got)
 	}
 }
 

@@ -368,6 +368,80 @@ func TestPromptCachingInterceptor_SkipsNonOpenAI(t *testing.T) {
 	}
 }
 
+func TestPromptCachingInterceptor_SkipsGroqOpenAIOSSModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"prompt_cache_key"`)) {
+			t.Error("Request body should NOT contain prompt_cache_key for Groq-routed OpenAI OSS model")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewOpenAIPromptCaching(CacheRetentionDefault, "test-key")
+
+	reqBody := []byte(`{"model":"openai/gpt-oss-20b","messages":[]}`)
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader(reqBody))
+	meta := llmproxy.BodyMetadata{
+		Model: "openai/gpt-oss-20b",
+		Custom: map[string]any{
+			"provider": "groq",
+		},
+	}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, reqBody, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_AllowsAzureOpenAIModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !bytes.Contains(body, []byte(`"prompt_cache_key"`)) {
+			t.Error("Request body should contain prompt_cache_key for Azure OpenAI model")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewOpenAIPromptCaching(CacheRetentionDefault, "test-key")
+
+	reqBody := []byte(`{"model":"gpt-4","messages":[]}`)
+	req, _ := http.NewRequest("POST", upstream.URL, bytes.NewReader(reqBody))
+	meta := llmproxy.BodyMetadata{
+		Model: "gpt-4",
+		Custom: map[string]any{
+			"provider": "azure",
+		},
+	}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	_, _, _, err := caching.Intercept(req, meta, reqBody, next)
+	if err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
 func TestPromptCachingInterceptor_AnthropicExistingCacheControl(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
