@@ -347,6 +347,69 @@ func TestAutoRouter_DeepseekV4StripsProviderPrefixBeforeForwarding(t *testing.T)
 	}
 }
 
+func TestAutoRouter_CohereStripsProviderPrefixBeforeForwarding(t *testing.T) {
+	var upstreamModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		upstreamModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-cohere","model":"command-a-plus-05-2026","choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	provider := &mockProvider{
+		name: "cohere",
+		parseFn: func(body io.ReadCloser) (BodyMetadata, []byte, error) {
+			data, _ := io.ReadAll(body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				return BodyMetadata{}, nil, err
+			}
+			return BodyMetadata{Model: req.Model}, data, nil
+		},
+		enrichFn: func(req *http.Request, meta BodyMetadata, body []byte) error { return nil },
+		resolveFn: func(meta BodyMetadata) (*url.URL, error) {
+			return ParseURL(upstream.URL + "/v1/chat/completions")
+		},
+		extractFn: func(resp *http.Response) (ResponseMetadata, []byte, error) {
+			body, _ := io.ReadAll(resp.Body)
+			return ResponseMetadata{ID: "chatcmpl-cohere", Model: "command-a-plus-05-2026"}, body, nil
+		},
+	}
+
+	router := NewAutoRouter(
+		WithAutoRouterDetector(ProviderDetectorFunc(func(hint ProviderHint) string {
+			return "cohere"
+		})),
+	)
+	router.RegisterProvider(provider)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model": "cohere/command-a-plus-05-2026",
+		"messages": [{"role":"user","content":"Reply with OK and nothing else."}]
+	}`)))
+	resp, _, err := router.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if upstreamModel != "command-a-plus-05-2026" {
+		t.Fatalf("upstream model = %q, want command-a-plus-05-2026", upstreamModel)
+	}
+}
+
 func TestAutoRouter_DeepseekReasoningOffDisablesThinking(t *testing.T) {
 	var upstreamBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -976,6 +1039,7 @@ func TestStripProviderPrefix(t *testing.T) {
 		{"azure prefix", "azure/gpt-4-deployment", "gpt-4-deployment", true},
 		{"mistral prefix", "mistral/codestral-2508", "codestral-2508", true},
 		{"deepseek prefix", "deepseek/deepseek-v4-pro", "deepseek-v4-pro", true},
+		{"cohere prefix", "cohere/command-a-plus-05-2026", "command-a-plus-05-2026", true},
 		{"multiple slashes preserved", "openai/gpt-4/turbo", "gpt-4/turbo", true},
 		{"empty string", "", "", false},
 		{"slash only - not a provider", "/", "/", false},
