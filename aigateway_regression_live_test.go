@@ -44,11 +44,11 @@ func TestLiveAIGatewayRegressionModels(t *testing.T) {
 			model:    "magistral-medium-latest",
 		},
 		{
-			name:     "cohere command-r uses compatibility chat completions",
+			name:     "cohere strips provider-prefixed model",
 			provider: "cohere",
 			baseURL:  "https://api.cohere.com/compatibility",
 			envKey:   "GATEWAY_COHERE_API_KEY",
-			model:    "command-r-08-2024",
+			model:    "cohere/command-a-plus-05-2026",
 		},
 	}
 

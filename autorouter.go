@@ -777,6 +777,7 @@ var knownProviderPrefixes = map[string]bool{
 	"azure":      true,
 	"mistral":    true,
 	"deepseek":   true,
+	"cohere":     true,
 }
 
 func (a *AutoRouter) validateModelSurface(providerName string, model string, apiType APIType) error {

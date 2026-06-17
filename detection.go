@@ -80,11 +80,11 @@ func DetectProviderFromModel(model string) string {
 		return ""
 	}
 
-	// Check for explicit provider prefix (e.g., "openai/gpt-4", "anthropic/claude-3-opus")
+	// Check for explicit provider prefix (e.g., "openai/gpt-4", "anthropic/claude-3-opus").
+	// knownProviderPrefixes is the single source of truth shared with stripProviderPrefix,
+	// so a prefix the router strips is always one it can also route by name.
 	if idx := strings.Index(model, "/"); idx >= 0 {
-		prefix := model[:idx]
-		switch prefix {
-		case "openai", "anthropic", "googleai", "groq", "fireworks", "xai", "perplexity", "bedrock", "azure", "mistral":
+		if prefix := model[:idx]; knownProviderPrefixes[prefix] {
 			return prefix
 		}
 	}
