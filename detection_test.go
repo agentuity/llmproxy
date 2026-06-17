@@ -139,6 +139,8 @@ func TestDetectProviderFromModel(t *testing.T) {
 		{"bedrock/claude prefix", "bedrock/anthropic.claude-3", "bedrock"},
 		{"azure/gpt-4 prefix", "azure/gpt-4", "azure"},
 		{"mistral/codestral prefix", "mistral/codestral-2508", "mistral"},
+		{"deepseek/deepseek-chat prefix", "deepseek/deepseek-chat", "deepseek"},
+		{"cohere/command prefix", "cohere/command-a-plus-05-2026", "cohere"},
 		{"unknown/ prefix returns unknown", "unknown/model", ""},
 		{"single slash only", "/", ""},
 	}
@@ -150,6 +152,19 @@ func TestDetectProviderFromModel(t *testing.T) {
 				t.Errorf("DetectProviderFromModel(%q) = %q, want %q", tt.model, result, tt.expected)
 			}
 		})
+	}
+}
+
+// Every prefix the router strips (knownProviderPrefixes) must also be routable
+// by name via DetectProviderFromModel. Otherwise a direct consumer that sends
+// "cohere/<model>" with no X-Provider header gets ErrNoProvider. This guards
+// against the two lists drifting apart again (deepseek/cohere previously did).
+func TestDetectProviderFromModel_KnownPrefixesAreDetected(t *testing.T) {
+	for prefix := range knownProviderPrefixes {
+		model := prefix + "/some-model"
+		if got := DetectProviderFromModel(model); got != prefix {
+			t.Errorf("DetectProviderFromModel(%q) = %q, want %q", model, got, prefix)
+		}
 	}
 }
 
