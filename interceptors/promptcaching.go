@@ -118,9 +118,13 @@ func (i *PromptCachingInterceptor) Intercept(req *http.Request, meta llmproxy.Bo
 }
 
 func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
-	apiType := xaiAPIType(req, meta, rawBody)
+	fields, fieldsOK := parseJSONObjectRaw(rawBody)
+	apiType := xaiAPIType(req, meta, fields, fieldsOK)
 	headerKey := strings.TrimSpace(req.Header.Get("x-grok-conv-id"))
-	bodyKey := xaiBodyPromptCacheKey(rawBody)
+	bodyKey := ""
+	if fieldsOK {
+		bodyKey = xaiBodyPromptCacheKeyFromFields(fields)
+	}
 	cacheKey := headerKey
 	if cacheKey == "" {
 		cacheKey = bodyKey
@@ -142,9 +146,9 @@ func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy
 	if headerKey == "" {
 		req.Header.Set("x-grok-conv-id", cacheKey)
 	}
-	if apiType == llmproxy.APITypeResponses && bodyKey == "" {
+	if apiType == llmproxy.APITypeResponses && bodyKey == "" && fieldsOK {
 		var err error
-		modifiedBody, bodyChanged, err = setXAIPromptCacheKey(rawBody, cacheKey)
+		modifiedBody, bodyChanged, err = setXAIPromptCacheKeyFromFields(fields, cacheKey)
 		if err != nil {
 			return next(req)
 		}
@@ -171,7 +175,15 @@ func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy
 	return resp, respMeta, rawRespBody, err
 }
 
-func xaiAPIType(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) llmproxy.APIType {
+func parseJSONObjectRaw(rawBody []byte) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &fields); err != nil || fields == nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+func xaiAPIType(req *http.Request, meta llmproxy.BodyMetadata, fields map[string]json.RawMessage, fieldsOK bool) llmproxy.APIType {
 	if req != nil && req.URL != nil {
 		if apiType := llmproxy.DetectAPITypeFromPath(req.URL.Path); apiType != "" {
 			return apiType
@@ -189,31 +201,50 @@ func xaiAPIType(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte) l
 			}
 		}
 	}
-	return llmproxy.DetectAPIType(rawBody)
+	if !fieldsOK {
+		return llmproxy.APITypeChatCompletions
+	}
+	_, hasInput := fields["input"]
+	_, hasMessages := fields["messages"]
+	if hasInput && !hasMessages {
+		return llmproxy.APITypeResponses
+	}
+	_, hasPrompt := fields["prompt"]
+	if hasPrompt && !hasMessages {
+		return llmproxy.APITypeCompletions
+	}
+	return llmproxy.APITypeChatCompletions
 }
 
-func xaiBodyPromptCacheKey(rawBody []byte) string {
-	var body struct {
-		PromptCacheKey string `json:"prompt_cache_key"`
-	}
-	if err := json.Unmarshal(rawBody, &body); err != nil {
+func xaiBodyPromptCacheKeyFromFields(fields map[string]json.RawMessage) string {
+	raw, ok := fields["prompt_cache_key"]
+	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(body.PromptCacheKey)
+	var key string
+	if err := json.Unmarshal(raw, &key); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(key)
 }
 
-func setXAIPromptCacheKey(rawBody []byte, cacheKey string) ([]byte, bool, error) {
-	var body map[string]interface{}
-	if err := json.Unmarshal(rawBody, &body); err != nil {
-		return rawBody, false, err
+func setXAIPromptCacheKeyFromFields(fields map[string]json.RawMessage, cacheKey string) ([]byte, bool, error) {
+	if existing := xaiBodyPromptCacheKeyFromFields(fields); existing != "" {
+		return nil, false, nil
 	}
-	if existing, ok := body["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
-		return rawBody, false, nil
-	}
-	body["prompt_cache_key"] = cacheKey
-	modified, err := json.Marshal(body)
+	keyRaw, err := json.Marshal(cacheKey)
 	if err != nil {
-		return rawBody, false, err
+		return nil, false, err
+	}
+	// Copy so callers can keep using the original parsed map unchanged.
+	next := make(map[string]json.RawMessage, len(fields)+1)
+	for k, v := range fields {
+		next[k] = v
+	}
+	next["prompt_cache_key"] = json.RawMessage(keyRaw)
+	modified, err := json.Marshal(next)
+	if err != nil {
+		return nil, false, err
 	}
 	return modified, true, nil
 }

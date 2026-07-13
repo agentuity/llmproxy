@@ -2267,6 +2267,27 @@ func TestDeriveCacheKeyFromPrefix_ResponsesInstructions(t *testing.T) {
 	}
 }
 
+func TestSetXAIPromptCacheKeyFromFieldsPreservesLargeIntegers(t *testing.T) {
+	raw := []byte(`{"model":"grok-4.5","input":"hi","max_tokens":9007199254740993}`)
+	fields, ok := parseJSONObjectRaw(raw)
+	if !ok {
+		t.Fatal("expected parseable body")
+	}
+	modified, changed, err := setXAIPromptCacheKeyFromFields(fields, "conv-1")
+	if err != nil {
+		t.Fatalf("setXAIPromptCacheKeyFromFields error = %v", err)
+	}
+	if !changed {
+		t.Fatal("expected body change")
+	}
+	if !bytes.Contains(modified, []byte(`"max_tokens":9007199254740993`)) {
+		t.Fatalf("expected large integer to be preserved, got %s", modified)
+	}
+	if !bytes.Contains(modified, []byte(`"prompt_cache_key":"conv-1"`)) {
+		t.Fatalf("expected prompt_cache_key injection, got %s", modified)
+	}
+}
+
 func TestPromptCachingInterceptor_FireworksCacheKeyHeader(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.Header.Get(HeaderFireworksSessionAffinity)

@@ -125,7 +125,7 @@ func TestLiveAnthropicMessagesStreamCompletes(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	body := `{"model":"` + model + `","stream":true,"max_tokens":64000,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"text","text":"Reply with GENESIS_DRIVER_SMOKE_OK and nothing else."}]}]}`
+	body := `{"model":"` + model + `","stream":true,"max_tokens":512,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"text","text":"Reply with GENESIS_DRIVER_SMOKE_OK and nothing else."}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -175,7 +175,7 @@ func TestLiveAgentuityAIGatewayAnthropicMessagesStreamCompletes(t *testing.T) {
 	body := map[string]any{
 		"model":      model,
 		"stream":     true,
-		"max_tokens": 64_000,
+		"max_tokens": 512,
 		"thinking": map[string]any{
 			"type": "disabled",
 		},
@@ -258,19 +258,12 @@ func summarizeAnthropicLiveStream(raw []byte) anthropicLiveStreamSummary {
 		EventTypes: make(map[string]int),
 	}
 	for _, block := range strings.Split(string(raw), "\n\n") {
-		var eventType string
 		var data string
 		for _, line := range strings.Split(block, "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "event:") {
-				eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			}
 			if strings.HasPrefix(line, "data:") {
 				data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			}
-		}
-		if eventType != "" {
-			summary.EventTypes[eventType]++
 		}
 		if data == "" {
 			continue
