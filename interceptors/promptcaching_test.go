@@ -2088,6 +2088,185 @@ func TestPromptCachingInterceptor_XAICacheKeyHeader(t *testing.T) {
 	}
 }
 
+func TestPromptCachingInterceptor_XAIResponsesAddsPromptCacheKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-grok-conv-id") != "conv-responses" {
+			t.Errorf("x-grok-conv-id header = %q, want conv-responses", r.Header.Get("x-grok-conv-id"))
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if body["prompt_cache_key"] != "conv-responses" {
+			t.Errorf("prompt_cache_key = %v, want conv-responses", body["prompt_cache_key"])
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCaching("conv-responses")
+	reqBody := []byte(`{"model":"grok-4.5","input":"What is prompt caching?"}`)
+	req, _ := http.NewRequest("POST", upstream.URL+"/v1/responses", bytes.NewReader(reqBody))
+	meta := llmproxy.BodyMetadata{
+		Model:  "grok-4.5",
+		Custom: map[string]any{"api_type": llmproxy.APITypeResponses},
+	}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	if _, _, _, err := caching.Intercept(req, meta, reqBody, next); err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_XAIResponsesPreservesExistingPromptCacheKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-grok-conv-id") != "existing-body-key" {
+			t.Errorf("x-grok-conv-id header = %q, want existing-body-key", r.Header.Get("x-grok-conv-id"))
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if body["prompt_cache_key"] != "existing-body-key" {
+			t.Errorf("prompt_cache_key = %v, want existing-body-key", body["prompt_cache_key"])
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCaching("config-key")
+	reqBody := []byte(`{"model":"grok-4.5","input":"hi","prompt_cache_key":"existing-body-key"}`)
+	req, _ := http.NewRequest("POST", upstream.URL+"/v1/responses", bytes.NewReader(reqBody))
+	meta := llmproxy.BodyMetadata{Model: "grok-4.5"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	if _, _, _, err := caching.Intercept(req, meta, reqBody, next); err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_XAIResponsesMirrorsHeaderToBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-grok-conv-id") != "header-conv" {
+			t.Errorf("x-grok-conv-id header = %q, want header-conv", r.Header.Get("x-grok-conv-id"))
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if body["prompt_cache_key"] != "header-conv" {
+			t.Errorf("prompt_cache_key = %v, want header-conv", body["prompt_cache_key"])
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCaching("config-key")
+	reqBody := []byte(`{"model":"grok-4.5","input":"hi"}`)
+	req, _ := http.NewRequest("POST", upstream.URL+"/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("x-grok-conv-id", "header-conv")
+	meta := llmproxy.BodyMetadata{Model: "grok-4.5"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	if _, _, _, err := caching.Intercept(req, meta, reqBody, next); err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestPromptCachingInterceptor_XAIChatMirrorsBodyKeyToHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-grok-conv-id") != "body-conv" {
+			t.Errorf("x-grok-conv-id header = %q, want body-conv", r.Header.Get("x-grok-conv-id"))
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if body["prompt_cache_key"] != "body-conv" {
+			t.Errorf("prompt_cache_key = %v, want body-conv (chat path should leave body key intact)", body["prompt_cache_key"])
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	caching := NewXAIPromptCaching("config-key")
+	reqBody := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"body-conv"}`)
+	req, _ := http.NewRequest("POST", upstream.URL+"/v1/chat/completions", bytes.NewReader(reqBody))
+	meta := llmproxy.BodyMetadata{Model: "grok-4.5"}
+
+	next := func(req *http.Request) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, llmproxy.ResponseMetadata{}, nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp, llmproxy.ResponseMetadata{}, body, nil
+	}
+
+	if _, _, _, err := caching.Intercept(req, meta, reqBody, next); err != nil {
+		t.Fatalf("Intercept returned error: %v", err)
+	}
+}
+
+func TestDeriveCacheKeyFromPrefix_ResponsesInstructions(t *testing.T) {
+	key1 := DeriveCacheKeyFromPrefix(llmproxy.BodyMetadata{}, []byte(`{"model":"grok-4.5","instructions":"Be helpful.","input":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"},{"role":"user","content":"Next"}]}`))
+	key2 := DeriveCacheKeyFromPrefix(llmproxy.BodyMetadata{}, []byte(`{"model":"grok-4.5","instructions":"Be helpful.","input":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"},{"role":"user","content":"Other"}]}`))
+	key3 := DeriveCacheKeyFromPrefix(llmproxy.BodyMetadata{}, []byte(`{"model":"grok-4.5","instructions":"Different.","input":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"},{"role":"user","content":"Next"}]}`))
+	if key1 == "" {
+		t.Fatal("expected non-empty responses prefix key")
+	}
+	if key1 != key2 {
+		t.Fatalf("expected stable key across last-turn changes, got %q vs %q", key1, key2)
+	}
+	if key1 == key3 {
+		t.Fatal("expected different key when instructions change")
+	}
+}
+
 func TestPromptCachingInterceptor_FireworksCacheKeyHeader(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.Header.Get(HeaderFireworksSessionAffinity)

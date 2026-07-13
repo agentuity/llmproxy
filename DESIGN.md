@@ -1021,8 +1021,10 @@ caching := interceptors.NewOpenAIPromptCachingWithOrgExtractor(
 
 `NewXAIPromptCaching(convID)` — Enables xAI/Grok prompt caching:
 
-- **Automatic prefix caching:** xAI caches from the start of the messages array automatically
-- **Cache routing:** Adds `x-grok-conv-id` HTTP header to route requests to the same server where cache lives
+- **Automatic prefix caching:** xAI caches from the start of the messages/input array automatically
+- **Chat Completions cache routing:** Adds `x-grok-conv-id` HTTP header to route requests to the same server where cache lives
+- **Responses API cache routing:** Adds `prompt_cache_key` to the request body (functionally identical sticky routing)
+- **Key preference:** Preserves client-supplied `x-grok-conv-id` / `prompt_cache_key`, mirrors between header and body when needed, then falls back to configured/extracted keys
 - **Conversation ID:** Use a stable value (conversation ID, session ID, or deterministic hash of static content)
 - **Key rule:** Never reorder or modify earlier messages — only append
 
