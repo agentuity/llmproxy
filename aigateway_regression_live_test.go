@@ -125,25 +125,17 @@ func TestLiveAnthropicMessagesStreamCompletes(t *testing.T) {
 	)
 	router.RegisterProvider(provider)
 
-	body := `{"model":"` + model + `","stream":true,"max_tokens":512,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"text","text":"Reply with GENESIS_DRIVER_SMOKE_OK and nothing else."}]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(body)))
+	rawBody, err := anthropicLiveStreamRequestBody(model)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		t.Fatalf("status %d: %s", resp.StatusCode, truncateLiveRegressionBody(raw))
-	}
-
-	assertAnthropicLiveStream(t, raw)
+	readAndAssertLiveStream(t, rec.Result())
 }
 
 func TestLiveAgentuityAIGatewayAnthropicMessagesStreamCompletes(t *testing.T) {
@@ -172,23 +164,7 @@ func TestLiveAgentuityAIGatewayAnthropicMessagesStreamCompletes(t *testing.T) {
 		model = "anthropic/claude-haiku-4-5-20251001"
 	}
 
-	body := map[string]any{
-		"model":      model,
-		"stream":     true,
-		"max_tokens": 512,
-		"thinking": map[string]any{
-			"type": "disabled",
-		},
-		"messages": []map[string]any{
-			{
-				"role": "user",
-				"content": []map[string]any{
-					{"type": "text", "text": "Reply with GENESIS_DRIVER_SMOKE_OK and nothing else."},
-				},
-			},
-		},
-	}
-	rawBody, err := json.Marshal(body)
+	rawBody, err := anthropicLiveStreamRequestBody(model)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -208,6 +184,31 @@ func TestLiveAgentuityAIGatewayAnthropicMessagesStreamCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send request: %v", err)
 	}
+	readAndAssertLiveStream(t, resp)
+}
+
+func anthropicLiveStreamRequestBody(model string) ([]byte, error) {
+	body := map[string]any{
+		"model":      model,
+		"stream":     true,
+		"max_tokens": 512,
+		"thinking": map[string]any{
+			"type": "disabled",
+		},
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": "Reply with GENESIS_DRIVER_SMOKE_OK and nothing else."},
+				},
+			},
+		},
+	}
+	return json.Marshal(body)
+}
+
+func readAndAssertLiveStream(t *testing.T, resp *http.Response) {
+	t.Helper()
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -216,7 +217,6 @@ func TestLiveAgentuityAIGatewayAnthropicMessagesStreamCompletes(t *testing.T) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		t.Fatalf("status %d: %s", resp.StatusCode, truncateLiveRegressionBody(raw))
 	}
-
 	assertAnthropicLiveStream(t, raw)
 }
 
