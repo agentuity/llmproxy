@@ -118,16 +118,48 @@ func (i *PromptCachingInterceptor) Intercept(req *http.Request, meta llmproxy.Bo
 }
 
 func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
-	if req.Header.Get("x-grok-conv-id") != "" {
-		return next(req)
+	fields, fieldsOK := parseJSONObjectRaw(rawBody)
+	apiType := xaiAPIType(req, meta, fields, fieldsOK)
+	headerKey := strings.TrimSpace(req.Header.Get("x-grok-conv-id"))
+	bodyKey := ""
+	if fieldsOK {
+		bodyKey = xaiBodyPromptCacheKeyFromFields(fields)
 	}
-
-	cacheKey := i.resolveDynamicCacheKey(req, meta, rawBody)
+	cacheKey := headerKey
+	if cacheKey == "" {
+		cacheKey = bodyKey
+	}
+	if cacheKey == "" {
+		cacheKey = i.resolveDynamicCacheKey(req, meta, rawBody)
+	}
 	if cacheKey == "" {
 		return next(req)
 	}
 
-	req.Header.Set("x-grok-conv-id", cacheKey)
+	modifiedBody := rawBody
+	bodyChanged := false
+
+	// Chat Completions sticky routing uses the x-grok-conv-id header.
+	// Responses sticky routing uses prompt_cache_key in the body (functionally
+	// identical per xAI docs). Mirror a client-supplied key across both forms
+	// so either API path gets sticky routing.
+	if headerKey == "" {
+		req.Header.Set("x-grok-conv-id", cacheKey)
+	}
+	if apiType == llmproxy.APITypeResponses && bodyKey == "" && fieldsOK {
+		var err error
+		modifiedBody, bodyChanged, err = setXAIPromptCacheKeyFromFields(fields, cacheKey)
+		if err != nil {
+			return next(req)
+		}
+	}
+
+	if bodyChanged {
+		if req.Body != nil {
+			req.Body.Close()
+		}
+		req = cloneRequestWithBody(req, modifiedBody)
+	}
 
 	resp, respMeta, rawRespBody, err := next(req)
 	if err != nil {
@@ -141,6 +173,80 @@ func (i *PromptCachingInterceptor) interceptXAI(req *http.Request, meta llmproxy
 	}
 
 	return resp, respMeta, rawRespBody, err
+}
+
+func parseJSONObjectRaw(rawBody []byte) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &fields); err != nil || fields == nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+func xaiAPIType(req *http.Request, meta llmproxy.BodyMetadata, fields map[string]json.RawMessage, fieldsOK bool) llmproxy.APIType {
+	if req != nil && req.URL != nil {
+		if apiType := llmproxy.DetectAPITypeFromPath(req.URL.Path); apiType != "" {
+			return apiType
+		}
+	}
+	if meta.Custom != nil {
+		switch v := meta.Custom["api_type"].(type) {
+		case llmproxy.APIType:
+			if v != "" {
+				return v
+			}
+		case string:
+			if v != "" {
+				return llmproxy.APIType(v)
+			}
+		}
+	}
+	if !fieldsOK {
+		return llmproxy.APITypeChatCompletions
+	}
+	_, hasInput := fields["input"]
+	_, hasMessages := fields["messages"]
+	if hasInput && !hasMessages {
+		return llmproxy.APITypeResponses
+	}
+	_, hasPrompt := fields["prompt"]
+	if hasPrompt && !hasMessages {
+		return llmproxy.APITypeCompletions
+	}
+	return llmproxy.APITypeChatCompletions
+}
+
+func xaiBodyPromptCacheKeyFromFields(fields map[string]json.RawMessage) string {
+	raw, ok := fields["prompt_cache_key"]
+	if !ok {
+		return ""
+	}
+	var key string
+	if err := json.Unmarshal(raw, &key); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(key)
+}
+
+func setXAIPromptCacheKeyFromFields(fields map[string]json.RawMessage, cacheKey string) ([]byte, bool, error) {
+	if existing := xaiBodyPromptCacheKeyFromFields(fields); existing != "" {
+		return nil, false, nil
+	}
+	keyRaw, err := json.Marshal(cacheKey)
+	if err != nil {
+		return nil, false, err
+	}
+	// Copy so callers can keep using the original parsed map unchanged.
+	next := make(map[string]json.RawMessage, len(fields)+1)
+	for k, v := range fields {
+		next[k] = v
+	}
+	next["prompt_cache_key"] = json.RawMessage(keyRaw)
+	modified, err := json.Marshal(next)
+	if err != nil {
+		return nil, false, err
+	}
+	return modified, true, nil
 }
 
 func (i *PromptCachingInterceptor) interceptFireworks(req *http.Request, meta llmproxy.BodyMetadata, rawBody []byte, next llmproxy.RoundTripFunc) (*http.Response, llmproxy.ResponseMetadata, []byte, error) {
@@ -607,8 +713,10 @@ func (i *PromptCachingInterceptor) resolveDynamicCacheKey(req *http.Request, met
 
 func DeriveCacheKeyFromPrefix(meta llmproxy.BodyMetadata, rawBody []byte) string {
 	var body struct {
-		System   interface{} `json:"system"`
-		Messages []struct {
+		System       interface{} `json:"system"`
+		Instructions interface{} `json:"instructions"`
+		Input        interface{} `json:"input"`
+		Messages     []struct {
 			Role    string      `json:"role"`
 			Content interface{} `json:"content"`
 		} `json:"messages"`
@@ -621,6 +729,10 @@ func DeriveCacheKeyFromPrefix(meta llmproxy.BodyMetadata, rawBody []byte) string
 		sysBytes, _ := json.Marshal(body.System)
 		prefix.Write(sysBytes)
 	}
+	if body.Instructions != nil {
+		instructionsBytes, _ := json.Marshal(body.Instructions)
+		prefix.Write(instructionsBytes)
+	}
 	if body.Tools != nil {
 		toolsBytes, _ := json.Marshal(body.Tools)
 		prefix.Write(toolsBytes)
@@ -629,6 +741,18 @@ func DeriveCacheKeyFromPrefix(meta llmproxy.BodyMetadata, rawBody []byte) string
 		if i < len(body.Messages)-1 {
 			msgBytes, _ := json.Marshal(msg)
 			prefix.Write(msgBytes)
+		}
+	}
+	// Responses API: hash prior input turns the same way as chat messages.
+	if len(body.Messages) == 0 {
+		switch input := body.Input.(type) {
+		case []interface{}:
+			for i, item := range input {
+				if i < len(input)-1 {
+					itemBytes, _ := json.Marshal(item)
+					prefix.Write(itemBytes)
+				}
+			}
 		}
 	}
 

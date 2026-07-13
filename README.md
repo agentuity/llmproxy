@@ -339,7 +339,7 @@ llmproxy.WithInterceptor(interceptors.NewOpenAIPromptCaching(interceptors.CacheR
 // OpenAI prompt caching with auto-derived key and tenant namespace
 llmproxy.WithInterceptor(interceptors.NewOpenAIPromptCachingAuto("tenant-123", interceptors.CacheRetentionDefault))
 
-// xAI/Grok prompt caching (uses x-grok-conv-id header)
+// xAI/Grok prompt caching (x-grok-conv-id for Chat Completions, prompt_cache_key for Responses)
 llmproxy.WithInterceptor(interceptors.NewXAIPromptCaching("conv-abc123"))
 
 // Fireworks prompt caching (uses x-session-affinity and x-prompt-cache-isolation-key headers)
