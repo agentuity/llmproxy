@@ -282,7 +282,38 @@ for msg in ws:
         break
 ```
 
-The proxy handles model prefix stripping, auth header forwarding, usage extraction, and per-turn billing automatically. See [DESIGN.md](DESIGN.md#websocket-mode) for full protocol details.
+The proxy handles model prefix stripping, configured provider authentication, usage extraction, and per-turn billing automatically. See [DESIGN.md](DESIGN.md#websocket-mode) for full protocol details.
+
+## Request header security
+
+HTTP, streaming, and WebSocket forwarding use the same request header policy.
+Caller authentication is separate from provider authentication. Incoming bearer
+tokens, API keys, AWS credentials, cookies, browser WebSocket credentials, and
+unknown headers are not forwarded. Connection headers and fields named by
+`Connection` are also removed.
+
+The proxy forwards supported content negotiation, content type and encoding,
+cache control, user agent, idempotency, request ID, and trace headers.
+`X-Cache-Key` and `X-Org-ID` remain available to the prompt caching interceptors.
+Provider options are forwarded only to the matching provider:
+
+| Provider | Options |
+| --- | --- |
+| OpenAI and Azure | `OpenAI-Beta`, `OpenAI-Organization`, `OpenAI-Project` |
+| Anthropic | `anthropic-version`, `anthropic-beta` |
+| xAI | `x-grok-conv-id` |
+| Fireworks | `x-session-affinity`, `x-prompt-cache-isolation-key` |
+
+The selected provider's request enricher adds its configured authentication
+after filtering. WebSocket dialers construct a fresh upstream handshake rather
+than reusing the browser's handshake or subprotocol credentials.
+
+Compatibility change: arbitrary caller headers and caller-supplied provider
+credentials no longer pass through automatically. For a custom upstream option,
+use a trusted request enricher or request interceptor that adds that specific
+header. Do not restore blanket forwarding of inbound headers. Provider enrichers
+and interceptors are trusted application code and must not reintroduce caller
+credentials. Authenticate callers in the hosting application before forwarding.
 
 ## Providers
 

@@ -93,9 +93,7 @@ func (p *Proxy) Forward(ctx context.Context, req *http.Request) (*http.Response,
 		return nil, ResponseMetadata{}, err
 	}
 
-	for k, v := range req.Header {
-		upstreamReq.Header[k] = v
-	}
+upstreamReq.Header = upstreamRequestHeaders(req.Header, p.provider.Name())
 
 	if err := p.provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return nil, ResponseMetadata{}, err

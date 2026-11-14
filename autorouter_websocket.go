@@ -99,7 +99,7 @@ func (a *AutoRouter) ForwardWebSocket(ctx context.Context, w http.ResponseWriter
 		return fmt.Errorf("resolve websocket url: %w", err)
 	}
 
-	headers := cloneHeader(r.Header)
+headers := upstreamRequestHeaders(r.Header, provider.Name())
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL.String(), bytes.NewReader(firstOut))
 	if err != nil {
 		_ = clientConn.Close()

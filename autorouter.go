@@ -213,9 +213,7 @@ func (a *AutoRouter) Forward(ctx context.Context, req *http.Request) (*http.Resp
 		return nil, ResponseMetadata{}, err
 	}
 
-	for k, v := range req.Header {
-		upstreamReq.Header[k] = v
-	}
+upstreamReq.Header = upstreamRequestHeaders(req.Header, provider.Name())
 
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return nil, ResponseMetadata{}, err
@@ -373,9 +371,7 @@ func (a *AutoRouter) ForwardStreaming(ctx context.Context, req *http.Request, w 
 		return ResponseMetadata{}, err
 	}
 
-	for k, v := range req.Header {
-		upstreamReq.Header[k] = v
-	}
+upstreamReq.Header = upstreamRequestHeaders(req.Header, provider.Name())
 
 	if err := provider.RequestEnricher().Enrich(upstreamReq, meta, body); err != nil {
 		return ResponseMetadata{}, err
